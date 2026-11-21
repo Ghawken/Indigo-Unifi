@@ -4,6 +4,14 @@
 		<Label>Show debug info in event log:</Label>
 	</Field>
 	
+	<Field id="readOnlyMode" type="checkbox" defaultValue="false">
+		<Label>Read-only mode:</Label>
+		<Description>Never change anything in UniFi</Description>
+	</Field>
+	<Field id="readOnlyHelp" type="label" fontSize="small" fontColor="darkgray">
+		<Label>When ticked, the plugin only reads from your UniFi consoles: devices, states, events, snapshots and existing RTSP stream URLs keep working, but every action or automation that would change UniFi (on/off, lock/unlock, reboot, PoE, firewall/WLAN/port forward, camera settings, creating RTSP streams, client purge, fan control, Wake-on-LAN) is blocked and logged instead of sent. Devices in Indigo are still created and updated as normal.</Label>
+	</Field>
+
 	<Field id="separator1" type="separator"/>
 	<Field id="label1" type="label">
 		<Label>═══ Client Auto-Discovery ═══</Label>

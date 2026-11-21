@@ -4,6 +4,39 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.12.17] - Read-only mode
+
+New plugin-level setting, **Read-only mode** (Plugins > UniFi > Configure,
+off by default). For setups that only want the plugin as a data source -
+e.g. Protect cameras feeding a HomeKit bridge - and never want it to change
+anything in UniFi.
+
+When on:
+
+- Every API client's request helper (Network integration + legacy,
+  Protect integration + legacy, Access, Drive API key + legacy) refuses any
+  method other than GET/HEAD/OPTIONS *before anything is sent*, raising
+  `UnifiReadOnlyError`. Enforced at those choke points rather than per
+  action, so any current or future write path - actions, device on/off,
+  automations, background tasks - is covered. Logins and WebSockets are
+  unaffected (not writes).
+- SSH helpers that change the UNAS (write/remove file, deploy/remove fan
+  control, set fan mode) are blocked before connecting; the daily fan
+  control auto-redeploy is skipped. Read-only SSH status checks still run.
+- Wake-on-LAN is not sent.
+- **Enable RTSP Streaming** (camera and package camera) reads the streams
+  that already exist and fills the `rtspUrl*` states from them, creating
+  none; any requested quality that doesn't exist yet is named in a warning
+  (enable it in the Protect app, or turn read-only off just to run the
+  action once).
+- Client purge runs as a dry run.
+- `UnifiReadOnlyError` deliberately does not subclass `UnifiAPIError`, so a
+  blocked write can never be mistaken for a sent-but-failed one (Drive's
+  `_request_raw` turns `UnifiAPIError` into a soft result).
+
+Indigo-side behaviour is unchanged: devices are still created and states
+updated as normal.
+
 ## [3.12.16] - Protect camera reliability fixes (WebSocket, doorbell, snapshot, package camera)
 
 Found during a review of the camera path used by HomeKit bridges
