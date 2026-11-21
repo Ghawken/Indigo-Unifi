@@ -4,6 +4,18 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.12.15] - Fixed "Enable RTSP Streaming" action dialog failing to open
+
+The Enable RTSP Streaming action (protectCamera) declared the
+`enablePackage` checkbox twice in Actions.xml. Indigo rejects any ConfigUI
+with a duplicate field id (`PAXDialogControllerError -- Field ID
+enablePackage was already used`), so the action's dialog could not be
+opened at all - which blocked filling in the rtspUrl* states that
+HomeKitLink Siri and other external viewers depend on. The duplicate is
+removed; the single remaining checkbox is read by the existing code
+unchanged. All other ConfigUI blocks were checked for duplicate field ids:
+none found.
+
 ## [3.12.14] - Fixed NameNotUniqueError during bulk client discovery
 
 User hit `NameNotUniqueError` running Create All Clients. Root cause:

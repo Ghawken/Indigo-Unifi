@@ -361,11 +361,8 @@
 				<Label>Low quality:</Label>
 			</Field>
 			<Field id="enablePackage" type="checkbox" defaultValue="false">
-				<Label>Package camera (if present):</Label>
-			</Field>
-			<Field id="enablePackage" type="checkbox" defaultValue="false">
 				<Label>Package camera quality:</Label>
-				<Description>Only applicable to cameras with a dedicated package-detection sensor (e.g. G4 Doorbell Pro).</Description>
+				<Description>Only applicable to cameras with a dedicated package lens (e.g. G4 Doorbell Pro, G6 Entry).</Description>
 			</Field>
 		</ConfigUI>
 	</Action>

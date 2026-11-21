@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # UniFi Plugin for Indigo Domotics
 # Author: Durosity
-# Version: 3.12.14
+# Version: 3.12.15
 #
 # Architecture:
 #   - Network:  Official Integration API (X-API-KEY) where possible,
@@ -36,7 +36,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.12.14"
+PLUGIN_VERSION       = "3.12.15"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
