@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # UniFi Plugin for Indigo Domotics
 # Author: Durosity
-# Version: 3.12.15
+# Version: 3.12.16
 #
 # Architecture:
 #   - Network:  Official Integration API (X-API-KEY) where possible,
@@ -36,7 +36,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.12.15"
+PLUGIN_VERSION       = "3.12.16"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -1567,7 +1567,7 @@ class UnifiProtectAPI:
         return self._request("POST", f"{self.BASE_PATH}/cameras/{camera_id}/reboot")
 
     def get_camera_snapshot_url(self, camera_id):
-        """Build a snapshot URL using Bearer auth (must be fetched with the API key header)."""
+        """Build a snapshot URL (fetch it with the X-API-KEY header, like every other call)."""
         return f"{self.base_url}{self.BASE_PATH}/cameras/{camera_id}/snapshot"
 
     # ------------------------------------------------------------------
@@ -2552,7 +2552,8 @@ class UnifiWebSocket:
 
                 self._read_frames(sock)
             except _PermanentWSFailure as e:
-                # Service not available / 502 / 503 / 404 - stop trying
+                # Endpoint not found (404) - stop trying. 502/503 are
+                # transient and retried with backoff instead.
                 if self.debug:
                     self.logger.debug(f"[{self.label}] WebSocket permanently unavailable: {e}")
                 self.stop_flag = True
@@ -2656,10 +2657,19 @@ class UnifiWebSocket:
 
         status_line = buf.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
         if " 101 " not in status_line and not status_line.endswith(" 101"):
-            # 404/502/503: the endpoint doesn't exist or the service is down.
-            # Retrying won't change either outcome - genuinely permanent.
-            if "502" in status_line or "503" in status_line or "404" in status_line:
+            # 404: the endpoint doesn't exist on this console - retrying
+            # won't change that, so it's treated as permanent.
+            if " 404" in status_line:
                 raise _PermanentWSFailure(status_line)
+            # 502/503: the app behind UniFi OS's proxy is down - normally
+            # temporary (Protect/Network/Access restarting for an update,
+            # console rebooting). These used to be permanent too, which
+            # silently ended real-time events until the plugin was
+            # restarted; now they fall through to the normal exponential
+            # backoff (capped at WS_RECONNECT_MAX_SEC) and reconnect once
+            # the app is back.
+            if " 502" in status_line or " 503" in status_line:
+                raise UnifiAPIError(f"WebSocket service unavailable ({status_line}) - will retry")
             # 401/403: rejected credentials. For session-based (cookie) auth
             # this commonly just means the session expired - potentially
             # self-healing, not necessarily permanent. See _WSAuthFailure.
@@ -2794,30 +2804,40 @@ class UnifiWebSocket:
             buf += chunk
         return buf
 
+    def _send_control(self, sock, opcode, payload=b""):
+        """Send a control frame (ping 0x9 / pong 0xA).
+
+        RFC 6455 5.1: every frame a client sends MUST be masked, and a
+        server MUST close the connection on receiving an unmasked one.
+        Earlier versions sent pings/pongs unmasked, so the first keepalive
+        (or the first reply to a server ping) could get the connection
+        closed - a likely cause of the periodic "clean close" reconnects
+        seen on Protect's sockets. RFC 6455 5.5: control frame payloads
+        are at most 125 bytes, so no extended length is ever needed."""
+        payload  = (payload or b"")[:125]
+        mask_key = os.urandom(4)
+        masked   = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        sock.sendall(struct.pack("!BB", 0x80 | opcode, 0x80 | len(payload))
+                     + mask_key + masked)
+
     def _send_ping(self, sock):
         try:
-            sock.send(struct.pack("BB", 0x89, 0))
+            self._send_control(sock, 0x9)
         except Exception:
             pass
 
     def _send_pong(self, sock, payload):
         try:
-            length = len(payload) if payload else 0
-            if length < 126:
-                header = struct.pack("BB", 0x8A, length)
-            elif length <= 0xFFFF:
-                header = struct.pack("BBH", 0x8A, 126, length)
-            else:
-                header = struct.pack("BBQ", 0x8A, 127, length)
-            sock.send(header + (payload or b""))
+            self._send_control(sock, 0xA, payload)
         except Exception:
             pass
 
 
 class _PermanentWSFailure(Exception):
     """Raised internally when WebSocket should stop trying to reconnect
-    (handshake rejected with 404/502/503 - the endpoint genuinely isn't
-    there or the service is down; retrying won't fix either)."""
+    (handshake rejected with 404 - the endpoint genuinely isn't there;
+    retrying won't fix that). 502/503 are deliberately NOT permanent: they
+    mean the app behind the console's proxy is restarting."""
 
 
 class _WSAuthFailure(Exception):
@@ -4203,7 +4223,9 @@ class Plugin(indigo.PluginBase):
             "babyCryDetected", "speechDetected", "barkDetected", "burglarAlarmDetected",
             "carHornDetected", "glassBreakDetected",
         ]
-        for dev_id in cameras.values():
+        # list(): device links are added from Indigo's own thread while this
+        # runs on the polling thread.
+        for cam_id, dev_id in list(cameras.items()):
             if dev_id not in indigo.devices:
                 continue
             dev = indigo.devices[dev_id]
@@ -4211,13 +4233,19 @@ class Plugin(indigo.PluginBase):
             if is_live == was_live:
                 continue  # no change - don't rewrite states every 5s for nothing
             dev.updateStateOnServer("eventFeedLive", is_live)
+            mirror = [{"key": "eventFeedLive", "value": is_live}]
             if not is_live:
                 for key in live_driven_keys:
                     if key in dev.states and dev.states.get(key):
                         dev.updateStateOnServer(key, False)
+                        mirror.append({"key": key, "value": False})
                 # onOffState mirrors motionDetected's Detected/Clear
                 # convention (3.11.1) - clear it the same way on a drop.
                 dev.updateStateOnServer("onOffState", False, uiValue="Clear")
+                mirror.append({"key": "onOffState", "value": False, "uiValue": "Clear"})
+            # Same clear on a linked Package Camera, or it would keep
+            # showing "Detected" through the whole outage.
+            self._mirror_to_package_camera(controller_id, cam_id, mirror)
 
     def _poll_controller(self, controller_id, now):
         controller = self.controllers.get(controller_id)
@@ -4316,6 +4344,11 @@ class Plugin(indigo.PluginBase):
                 controller["protect_api"].refresh_cache()
                 for camera_id in list(controller["cameras"].keys()):
                     self._update_camera_states(controller_id, camera_id, refresh=False)
+                # Package Cameras copy their parent's states (status,
+                # isConnected, firmware, ...) - without this they were only
+                # copied once, when the device was linked.
+                for parent_dev_id in list(controller.get("package_cameras", {}).keys()):
+                    self._update_packagecam_states(controller_id, parent_dev_id)
                 for sensor_id in list(controller["sensors"].keys()):
                     self._update_sensor_states(controller_id, sensor_id, refresh=False)
             except Exception as e:
@@ -4799,11 +4832,38 @@ class Plugin(indigo.PluginBase):
                                 self._fire_trigger(trigger_id, dev)
 
             elif evt_type == "ring":
-                dev.updateStateOnServer("doorbellRinging",  True)
-                dev.updateStateOnServer("lastDoorbellRing", now_str)
-                self._fire_trigger("doorbellRing", dev)
-                # Auto-clear after a few seconds
-                threading.Timer(5.0, lambda d=dev: self._clear_doorbell(d)).start()
+                # Protect sends more than one message for a single press
+                # (an add, then update(s) with the same event id), and a
+                # ring has no "end" for the active_events bookkeeping above
+                # to key off. Without this, one press could fire the
+                # doorbellRing trigger twice and move lastDoorbellRing
+                # twice - which HomeKit bridges watching that state
+                # announce as two separate rings. Remember the last few
+                # ring ids (bounded, so it can't grow forever) and act
+                # only on the first message for each.
+                seen_rings = controller.setdefault("handled_ring_ids", [])
+                if event_id and event_id in seen_rings:
+                    if self.debug:
+                        self.logger.debug(f"[Protect] ring update for an already-handled ring on {dev.name} - ignored")
+                else:
+                    if event_id:
+                        seen_rings.append(event_id)
+                        del seen_rings[:-50]
+                    dev.updateStateOnServer("doorbellRinging",  True)
+                    dev.updateStateOnServer("lastDoorbellRing", now_str)
+                    self._fire_trigger("doorbellRing", dev)
+                    # Auto-clear after a few seconds. A second press inside
+                    # the window restarts the timer rather than letting the
+                    # first press's timer clear the second one early.
+                    timers = controller.setdefault("doorbell_clear_timers", {})
+                    old_timer = timers.pop(cam_id, None)
+                    if old_timer is not None:
+                        old_timer.cancel()
+                    timer = threading.Timer(
+                        5.0, self._clear_doorbell, args=(dev.id, controller_id, cam_id))
+                    timer.daemon = True
+                    timers[cam_id] = timer
+                    timer.start()
 
             self._mirror_event_states_to_package_camera(controller_id, cam_id, dev)
 
@@ -4827,9 +4887,17 @@ class Plugin(indigo.PluginBase):
         if states:
             self._mirror_to_package_camera(controller_id, cam_id, states)
 
-    def _clear_doorbell(self, dev):
+    def _clear_doorbell(self, dev_id, controller_id=None, cam_id=None):
         try:
-            dev.updateStateOnServer("doorbellRinging", False)
+            if dev_id in indigo.devices:
+                indigo.devices[dev_id].updateStateOnServer("doorbellRinging", False)
+            # Mirror the clear to a linked Package Camera - the ring itself
+            # is mirrored by _mirror_event_states_to_package_camera, but
+            # this runs later, on a timer, so it has to mirror on its own
+            # or the package camera's doorbellRinging stays True forever.
+            if controller_id is not None and cam_id:
+                self._mirror_to_package_camera(
+                    controller_id, cam_id, [{"key": "doorbellRinging", "value": False}])
         except Exception:
             pass
 
@@ -7727,20 +7795,23 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"rebootCamera error: {e}")
 
     def actionTakeSnapshot(self, action):
-        """Fetch a snapshot via the integration API and optionally save to disk."""
+        """Fetch a snapshot via the integration API and save it to the given path."""
         try:
             dev = indigo.devices[action.deviceId]
             cid, cam_id, api = self._get_camera_api(dev)
             if not api:
                 return
-            save_path = action.props.get("savePath", "").strip()
+            save_path = os.path.expanduser(action.props.get("savePath", "").strip())
             if not save_path:
                 self.logger.warning(f"{dev.name}: No save path specified for snapshot")
                 return
 
             url = api.get_camera_snapshot_url(cam_id)
             req = urllib.request.Request(url, method="GET")
-            req.add_header("Authorization", f"Bearer {api.api_key}")
+            # Same header every other Protect Integration API call uses
+            # (see UnifiProtectAPI._request) - this one previously sent
+            # "Authorization: Bearer", which the API doesn't accept.
+            req.add_header("X-API-KEY", api.api_key)
             with api.opener.open(req, timeout=30) as response:
                 data = response.read()
             with open(save_path, "wb") as f:

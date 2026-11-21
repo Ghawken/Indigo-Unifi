@@ -4,6 +4,44 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.12.16] - Protect camera reliability fixes (WebSocket, doorbell, snapshot, package camera)
+
+Found during a review of the camera path used by HomeKit bridges
+(HomeKitLink Siri reads this plugin's camera states for motion, doorbell
+rings, RTSP URLs and snapshots).
+
+- **WebSocket ping/pong frames are now masked.** RFC 6455 5.1 requires
+  every client-to-server frame to be masked and lets the server close the
+  connection on an unmasked one. Pings/pongs were sent unmasked, so the
+  first keepalive (or reply to a server ping) could get the socket closed.
+  This is a likely cause of the periodic "clean close" reconnects on
+  Protect's sockets, and the motion/doorbell gaps around them. Pong
+  payloads are capped at 125 bytes (RFC 6455 5.5); the old pong also packed
+  extended lengths in native rather than network byte order.
+- **502/503 on the WebSocket handshake no longer stop it for good.** They
+  mean the app behind UniFi OS is restarting (Protect/Network/Access
+  update, console reboot). Previously the WebSocket thread exited and
+  real-time events stopped until the plugin was restarted; now it retries
+  with the normal exponential backoff. 404 is still treated as permanent.
+- **One doorbell press = one ring.** Protect sends more than one message
+  per press with the same event id; each fired the `doorbellRing` trigger
+  and moved `lastDoorbellRing`, which HomeKit bridges announce as separate
+  rings. Rings are now de-duplicated by event id (last 50 kept). A second
+  press within 5 s restarts the `doorbellRinging` auto-clear timer instead
+  of being cleared early by the first press's timer.
+- **Take Snapshot action works.** It sent `Authorization: Bearer`; the
+  Protect Integration API takes `X-API-KEY`, as every other call here
+  already does. The save path (required, despite being labelled optional)
+  now accepts `~`, and the dialog says it is required.
+- **Package Camera states no longer get stuck.** `doorbellRinging` is now
+  cleared on the package camera too; an event-feed drop now clears its
+  motion/detection states and `eventFeedLive` the same as the parent
+  camera's; and its non-event states (status, isConnected, firmware...)
+  are refreshed on every stats interval instead of only when linked.
+- The event-feed health check now iterates over a copy of the camera map
+  (it runs on the polling thread while device links are added from
+  Indigo's thread).
+
 ## [3.12.15] - Fixed "Enable RTSP Streaming" action dialog failing to open
 
 The Enable RTSP Streaming action (protectCamera) declared the
