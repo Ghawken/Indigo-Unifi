@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # UniFi Plugin for Indigo Domotics
 # Author: Durosity
-# Version: 3.12.17
+# Version: 3.12.18
 #
 # Architecture:
 #   - Network:  Official Integration API (X-API-KEY) where possible,
@@ -36,11 +36,18 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.12.17"
+PLUGIN_VERSION       = "3.12.18"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
 DEFAULT_ACCESS_PORT  = 12445  # UniFi Access developer API runs on its own port
+
+# Dynamic-list option ids. Indigo rejects an empty option id ("UI dynamic
+# list function returned illegal ID string (ignoring)"), so the "Any ..."
+# choice in trigger menus and the "(none found ...)" placeholder in device
+# menus need real ids of their own.
+LIST_ID_ANY  = "any"
+LIST_ID_NONE = "none"
 
 # Polling intervals (seconds)
 DEFAULT_STATS_INTERVAL_SEC   = 300   # 5 min - configurable in controller UI
@@ -3043,8 +3050,9 @@ class Plugin(indigo.PluginBase):
             # Support both 'device' and 'deviceId' field names for compatibility
             device_filter = trigger.pluginProps.get("device", "") or \
                             trigger.pluginProps.get("deviceId", "")
-            # Empty = "Any device"
-            if device_filter == "" or device_filter == str(device.id):
+            # "any" = "Any device" (empty too: triggers saved by versions
+            # before 3.12.18, whose "Any" option had an empty id)
+            if device_filter in ("", LIST_ID_ANY) or device_filter == str(device.id):
                 if self.debug:
                     self.logger.debug(f"Firing trigger '{trigger.name}' for {device.name}")
                 indigo.trigger.execute(trigger)
@@ -6642,6 +6650,30 @@ class Plugin(indigo.PluginBase):
             out.append((str(d.id), d.name))
         return out
 
+    # Device types whose config has a menu that shows a "(none found ...)"
+    # placeholder when there's nothing to pick: type id -> (field id, label)
+    _PICK_REQUIRED = {
+        "protectPackageCamera": ("parentCameraId", "parent camera"),
+        "firewallPolicy":       ("policyId",       "firewall policy"),
+        "trafficRoute":         ("routeId",        "traffic route"),
+        "portForward":          ("forwardId",      "port forward rule"),
+        "wlanDevice":           ("wlanId",         "WLAN"),
+        "alarmProfile":         ("armProfileId",   "arm profile"),
+    }
+
+    def validateDeviceConfigUi(self, valuesDict, typeId, devId):
+        """Refuse to save a device whose required menu is still on the
+        "(none found ...)" placeholder - otherwise its id would be stored
+        and used as if it were a real UniFi object id."""
+        required = self._PICK_REQUIRED.get(typeId)
+        if required:
+            field_id, label = required
+            if str(valuesDict.get(field_id, "") or "") in ("", LIST_ID_NONE):
+                errors = indigo.Dict()
+                errors[field_id] = f"Pick a {label} - pick the controller first if the list is empty."
+                return (False, valuesDict, errors)
+        return (True, valuesDict)
+
     def getDriveControllerList(self, filter="", valuesDict=None, typeId="", targetId=0):
         """Return list of UNAS Drive controller devices."""
         out = []
@@ -6650,7 +6682,7 @@ class Plugin(indigo.PluginBase):
         return out
 
     def getCameraList(self, filter="", valuesDict=None, typeId="", targetId=0):
-        out = [("", "Any Camera")]
+        out = [(LIST_ID_ANY, "Any Camera")]
         for d in indigo.devices.iter("self.protectCamera"):
             out.append((str(d.id), d.name))
         return out
@@ -6684,12 +6716,12 @@ class Plugin(indigo.PluginBase):
             if self.debug:
                 self.logger.debug(f"getPackageCameraParentList error: {e}")
         if not out:
-            out = [("", "(no cameras found - create the parent camera device first, "
+            out = [(LIST_ID_NONE, "(no cameras found - create the parent camera device first, "
                         "then pick the controller above)")]
         return out
 
     def getSensorList(self, filter="", valuesDict=None, typeId="", targetId=0):
-        out = [("", "Any Sensor")]
+        out = [(LIST_ID_ANY, "Any Sensor")]
         for d in indigo.devices.iter("self.protectSensor"):
             out.append((str(d.id), d.name))
         return out
@@ -6711,7 +6743,7 @@ class Plugin(indigo.PluginBase):
             if self.debug:
                 self.logger.debug(f"getFirewallPolicyList error: {e}")
         if not out:
-            out = [("", "(none found - pick the controller above first)")]
+            out = [(LIST_ID_NONE, "(none found - pick the controller above first)")]
         return out
 
     def getTrafficRouteList(self, filter="", valuesDict=None, typeId="", targetId=0):
@@ -6729,7 +6761,7 @@ class Plugin(indigo.PluginBase):
             if self.debug:
                 self.logger.debug(f"getTrafficRouteList error: {e}")
         if not out:
-            out = [("", "(none found - pick the controller above first)")]
+            out = [(LIST_ID_NONE, "(none found - pick the controller above first)")]
         return out
 
     def getPortForwardList(self, filter="", valuesDict=None, typeId="", targetId=0):
@@ -6746,7 +6778,7 @@ class Plugin(indigo.PluginBase):
             if self.debug:
                 self.logger.debug(f"getPortForwardList error: {e}")
         if not out:
-            out = [("", "(none found - pick the controller above first)")]
+            out = [(LIST_ID_NONE, "(none found - pick the controller above first)")]
         return out
 
     def getWLANList(self, filter="", valuesDict=None, typeId="", targetId=0):
@@ -6763,7 +6795,7 @@ class Plugin(indigo.PluginBase):
             if self.debug:
                 self.logger.debug(f"getWLANList error: {e}")
         if not out:
-            out = [("", "(none found - pick the controller above first)")]
+            out = [(LIST_ID_NONE, "(none found - pick the controller above first)")]
         return out
 
     def getVideoModeList(self, filter="", valuesDict=None, typeId="", targetId=0):
@@ -6816,31 +6848,31 @@ class Plugin(indigo.PluginBase):
             if self.debug:
                 self.logger.debug(f"getArmProfileList error: {e}")
         if not out:
-            out = [("", "(none found - this is expected if Alarm Manager isn't set up, "
+            out = [(LIST_ID_NONE, "(none found - this is expected if Alarm Manager isn't set up, "
                         "or if it's not where this plugin currently looks; see the "
                         "instructions below)")]
         return out
 
     def getNetworkDeviceList(self, filter="", valuesDict=None, typeId="", targetId=0):
-        out = [("", "Any Device")]
+        out = [(LIST_ID_ANY, "Any Device")]
         for d in indigo.devices.iter("self.networkDevice"):
             out.append((str(d.id), d.name))
         return out
 
     def getPortDeviceList(self, filter="", valuesDict=None, typeId="", targetId=0):
-        out = [("", "Any Port")]
+        out = [(LIST_ID_ANY, "Any Port")]
         for d in indigo.devices.iter("self.unifiPort"):
             out.append((str(d.id), d.name))
         return out
 
     def getClientList(self, filter="", valuesDict=None, typeId="", targetId=0):
-        out = [("", "Any Client")]
+        out = [(LIST_ID_ANY, "Any Client")]
         for d in indigo.devices.iter("self.clientDevice"):
             out.append((str(d.id), d.name))
         return out
 
     def getDoorList(self, filter="", valuesDict=None, typeId="", targetId=0):
-        out = [("", "Any Door")]
+        out = [(LIST_ID_ANY, "Any Door")]
         for d in indigo.devices.iter("self.accessDoor"):
             out.append((str(d.id), d.name))
         return out

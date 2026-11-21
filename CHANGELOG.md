@@ -4,6 +4,21 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.12.18] - Fixed "UI dynamic list function returned illegal ID string"
+
+Opening a trigger (e.g. Camera: Doorbell Ring) logged `UI dynamic list
+function returned illegal ID string (ignoring):` - Indigo rejects an empty
+option id, and every "Any Camera / Sensor / Device / Port / Client / Door"
+choice used one, as did the "(none found ...)" placeholder in the package
+camera, firewall policy, traffic route, port forward, WLAN and arm profile
+menus.
+
+- "Any ..." options now have the id `any`; trigger matching treats `any`
+  and `""` (triggers saved by earlier versions) as "any device".
+- Placeholders now have the id `none`, and a new `validateDeviceConfigUi`
+  refuses to save one of those device types while its menu is still on the
+  placeholder (or empty), so it's never stored and used as a UniFi id.
+
 ## [3.12.17] - Read-only mode
 
 New plugin-level setting, **Read-only mode** (Plugins > UniFi > Configure,
