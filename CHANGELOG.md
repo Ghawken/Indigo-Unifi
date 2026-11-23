@@ -4,6 +4,17 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.13.2] - Gate / door position going stale
+
+A gate that closed by itself kept showing `open`: Access doors were only
+re-read when an Access WebSocket event named the door's `door_id`, or after
+a command from Indigo, and nothing polled them.
+
+- Gates are now re-read every 5 s.
+- All other doors are re-read at the stats interval.
+- WebSocket events that carry the door as `id`, `location_id` or `door.id`
+  instead of `door_id` now update the door too.
+
 ## [3.13.1] - Gate: reversed position sensor option
 
 New **Position sensor: Reversed** checkbox for gate use. A gate's closed-limit

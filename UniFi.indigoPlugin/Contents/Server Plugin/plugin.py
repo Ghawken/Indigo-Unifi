@@ -36,7 +36,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.13.1"
+PLUGIN_VERSION       = "3.13.2"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -4347,7 +4347,7 @@ class Plugin(indigo.PluginBase):
         if controller.get("door_relock_pending"):
             self._check_door_relocks(controller_id, now)
         if controller.get("gates"):
-            self._check_gate_moves(controller_id)
+            self._poll_gates(controller_id)
 
         # Same "every tick, not gated" treatment as the door relock check
         # above - an event feed outage needs to be reflected immediately,
@@ -4427,6 +4427,16 @@ class Plugin(indigo.PluginBase):
             except Exception as e:
                 if self.debug:
                     self.logger.debug(f"Fan control deployment check error: {e}")
+
+        # Access: doors were only ever re-read on a WebSocket event naming
+        # them or after a command from here, so a door position change the
+        # WebSocket didn't report stayed wrong indefinitely. Gates are
+        # polled every tick instead (_poll_gates).
+        if "access_api" in controller:
+            gates = controller.get("gates", {})
+            for door_id in list(controller.get("doors", {})):
+                if door_id not in gates:
+                    self._update_door_states(controller_id, door_id)
 
         # Protect: cameras have a lot of stats (recording/bitrate/voltage). WebSocket
         # handles motion/smart events; this just keeps the slow stats fresh.
@@ -5131,6 +5141,12 @@ class Plugin(indigo.PluginBase):
             data       = message.get("data") or message
             door_id    = (data.get("door_id") if isinstance(data, dict) else None) \
                          or message.get("doorId")
+            if door_id not in controller.get("doors", {}) and isinstance(data, dict):
+                # Some Access events (e.g. location/door updates) carry the
+                # door as the object's own id rather than door_id.
+                door = data.get("door") if isinstance(data.get("door"), dict) else {}
+                door_id = next((c for c in (data.get("id"), data.get("location_id"), door.get("id"))
+                                if c and c in controller.get("doors", {})), door_id)
 
             # Debug: full raw event, every time. Needed specifically to
             # determine whether actor/timestamp data (for lastAccessUser/
@@ -5916,15 +5932,17 @@ class Plugin(indigo.PluginBase):
         self.logger.info(f"{dev.name}: {'Opening' if open_it else 'Closing'} (relay pulsed)")
         self._update_door_states(cid, door_id)
 
-    def _check_gate_moves(self, controller_id):
-        """Each tick, re-read gates that are moving, so opening/closing
-        turns into open/closed/stopped without waiting for a DPS change."""
+    def _poll_gates(self, controller_id):
+        """Re-read every gate each tick (5s). A gate mostly moves on its own
+        (auto-close, remotes, keypads), and the Access WebSocket can't be
+        relied on to say so, so its position is polled rather than left
+        until the next command. Also turns opening/closing into
+        open/closed/stopped once the travel time is up."""
         controller = self.controllers.get(controller_id)
         if not controller:
             return
-        for door_id, gate in list(controller.get("gates", {}).items()):
-            if "move" in gate:
-                self._update_door_states(controller_id, door_id)
+        for door_id in list(controller.get("gates", {})):
+            self._update_door_states(controller_id, door_id)
 
     def _update_door_states(self, controller_id, door_id):
         controller = self.controllers.get(controller_id)
