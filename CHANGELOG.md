@@ -4,6 +4,20 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.12.19] - Read-only mode now only covers UniFi Network
+
+With read-only mode on, unlocking an Access door failed with `Read-only mode
+is on - not sending PUT /api/v1/developer/doors/.../unlock`. Read-only mode is
+meant to stop the plugin changing network settings, not to stop you using
+your devices, so it now applies to the **UniFi Network** application only
+(firewall policies, traffic routes, port forwards, WLANs, PoE/port and device
+control, client purge).
+
+Protect, Access and Drive are no longer restricted: door unlock/lock,
+Enable RTSP Streaming (creates missing streams again), camera controls,
+UNAS fan control, Wake-on-LAN and the fan-control auto-redeploy all work
+with read-only mode on.
+
 ## [3.12.18] - Fixed "UI dynamic list function returned illegal ID string"
 
 Opening a trigger (e.g. Camera: Doorbell Ring) logged `UI dynamic list

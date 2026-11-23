@@ -36,7 +36,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.12.18"
+PLUGIN_VERSION       = "3.12.19"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -152,20 +152,21 @@ class UnifiAPIError(Exception):
 # Read-only mode
 # ----------------------------------------------------------------------------
 # Plugin-level setting (PluginConfig "readOnlyMode"). When on, the plugin
-# only READS from UniFi: every request helper below refuses any HTTP method
-# other than GET/HEAD/OPTIONS, the SSH helpers refuse anything that changes
-# the UNAS, and Wake-on-LAN is not sent. Enforced here, at the few choke
-# points every request goes through, rather than action by action - so a
-# write path added later is covered automatically, and an automation can't
-# get past it by calling an action directly.
+# never changes the UniFi NETWORK application: both Network request helpers
+# refuse any HTTP method other than GET/HEAD/OPTIONS (firewall, routes, port
+# forwards, WLANs, PoE/port/device control, client forget...). Enforced at
+# those two choke points rather than action by action, so a Network write
+# path added later is covered automatically.
+#
+# Protect, Access and Drive are deliberately NOT restricted: those are
+# devices people operate day to day (unlocking a door, enabling a camera's
+# RTSP stream, rebooting a camera, waking the UNAS), not network settings.
 #
 # Logins (POST /api/auth/login) are not writes and go through their own
 # helpers, which this deliberately does not touch; neither are WebSockets.
 #
-# UnifiReadOnlyError is intentionally NOT a UnifiAPIError subclass: some
-# callers turn UnifiAPIError into a soft "failed" result (e.g. Drive's
-# _request_raw), and a blocked write must never be mistaken for anything
-# that might have been sent.
+# UnifiReadOnlyError is intentionally NOT a UnifiAPIError subclass, so a
+# blocked write is never mistaken for one that was sent and failed.
 # ============================================================================
 
 _READ_ONLY = {"enabled": False}
@@ -1231,7 +1232,6 @@ class UnifiProtectAPI:
     # ------------------------------------------------------------------
 
     def _request(self, method, path, data=None, timeout=DEFAULT_HTTP_TIMEOUT_SEC):
-        _check_writable(method, path)
         if not self.api_key:
             raise UnifiAuthError("Protect API key is not configured")
 
@@ -1372,7 +1372,6 @@ class UnifiProtectAPI:
 
     def _legacy_request(self, method, path, data=None, timeout=DEFAULT_HTTP_TIMEOUT_SEC, _retry=True):
         """Request against the private API. Logs in lazily, retries once on 401."""
-        _check_writable(method, path)
         if not self.legacy_logged_in:
             self._legacy_login()
 
@@ -1715,7 +1714,6 @@ class UnifiAccessAPI:
         self.opener      = _build_opener(self.ssl_context)
 
     def _request(self, method, path, data=None, timeout=DEFAULT_HTTP_TIMEOUT_SEC):
-        _check_writable(method, path)
         if not self.api_key:
             raise UnifiAuthError("Access API key is not configured")
 
@@ -1877,7 +1875,6 @@ class UnifiDriveAPI:
     def _api_request(self, method, path, data=None, timeout=DEFAULT_HTTP_TIMEOUT_SEC,
                      expect_json=True):
         """Request using X-API-Key auth (preferred when configured)."""
-        _check_writable(method, path)
         if not self.api_key:
             raise UnifiAuthError("Drive API key is not configured")
 
@@ -1960,7 +1957,6 @@ class UnifiDriveAPI:
     def _legacy_request(self, method, path, data=None, timeout=DEFAULT_HTTP_TIMEOUT_SEC,
                         expect_json=True, _retry=True):
         """Request using legacy cookie auth. Logs in lazily, retries once on 401."""
-        _check_writable(method, path)
         if not self.legacy_logged_in:
             self._legacy_login()
 
@@ -2276,7 +2272,6 @@ class UnifiDriveSSH:
     def write_file(self, remote_path, content, mode=0o755):
         """Upload `content` (string) to remote_path on the UNAS using SFTP.
         Sets the given file mode on the remote file."""
-        _check_writable("SSH write", remote_path)
         client = self._connect()
         sftp = None
         try:
@@ -2298,7 +2293,6 @@ class UnifiDriveSSH:
 
     def remove_file(self, remote_path):
         """Best-effort delete of a remote file. Doesn't raise if missing."""
-        _check_writable("SSH delete", remote_path)
         try:
             self.run(f"rm -f {remote_path}", check=False)
         except UnifiSSHError:
@@ -2313,7 +2307,6 @@ class UnifiDriveSSH:
         running again upgrades to the latest script content. Sets initial
         mode to 'default' so behaviour matches pre-deploy until the user
         explicitly chooses a mode."""
-        _check_writable("SSH deploy", "fan control service")
         # Upload script and service
         self.write_file(_SSH_SCRIPT_PATH,  script_content,  mode=0o755)
         self.write_file(_SSH_SERVICE_PATH, service_content, mode=0o644)
@@ -2334,7 +2327,6 @@ class UnifiDriveSSH:
     def remove_fan_control(self):
         """Uninstall: stop+disable service, remove all deployed files. After
         this the UNAS firmware's native fan controller takes over again."""
-        _check_writable("SSH remove", "fan control service")
         self.run(f"systemctl stop {_SSH_SERVICE_NAME}", check=False)
         self.run(f"systemctl disable {_SSH_SERVICE_NAME}", check=False)
         self.remove_file(_SSH_SERVICE_PATH)
@@ -2346,7 +2338,6 @@ class UnifiDriveSSH:
     def set_mode(self, mode):
         """Set the active fan control mode. `mode` is one of:
         quiet, balance, cooling, default."""
-        _check_writable("SSH set", "fan mode")
         mode = (mode or "").strip().lower()
         if mode not in ("quiet", "balance", "cooling", "default"):
             raise UnifiSSHError(f"Unknown fan mode: {mode}")
@@ -3003,7 +2994,7 @@ class Plugin(indigo.PluginBase):
     def startup(self):
         self.logger.info(f"Starting UniFi Plugin v{PLUGIN_VERSION}")
         if is_read_only():
-            self.logger.info("Read-only mode is ON - this plugin will read from UniFi but never change anything there")
+            self.logger.info("Read-only mode is ON - UniFi Network settings will not be changed (Protect, Access and Drive control still works)")
         self.stop_polling   = False
         self.polling_thread = threading.Thread(target=self._polling_loop, daemon=True,
                                                name="unifi-poll")
@@ -3027,7 +3018,7 @@ class Plugin(indigo.PluginBase):
         was_read_only = is_read_only()
         set_read_only(valuesDict.get("readOnlyMode", False))
         if is_read_only() != was_read_only:
-            self.logger.info(f"Read-only mode: {'ON - no changes will be sent to UniFi' if is_read_only() else 'off'}")
+            self.logger.info(f"Read-only mode: {'ON - no changes will be sent to UniFi Network' if is_read_only() else 'off'}")
         return True
 
     # ------------------------------------------------------------------
@@ -6258,8 +6249,6 @@ class Plugin(indigo.PluginBase):
             to click the manual button)
           - We checked less than 24 hours ago
         """
-        if is_read_only():
-            return  # redeploying writes to the UNAS
         controller = self.controllers.get(controller_id)
         if not controller:
             return
@@ -7940,17 +7929,7 @@ class Plugin(indigo.PluginBase):
 
             existing = api.get_rtsps_streams(cam_id) or {}
             to_create = [q for q in wanted if not existing.get(q)]
-            if to_create and is_read_only():
-                # Creating a stream changes Protect's config, so in
-                # read-only mode only the streams that already exist are
-                # read and filled in - nothing is created.
-                self.logger.warning(
-                    f"{dev.name}: Read-only mode - not creating RTSP stream(s) for: "
-                    f"{', '.join(to_create)}. Turn them on in the Protect app (camera > "
-                    f"Settings > Advanced > RTSP) and run this action again to read them, "
-                    f"or turn read-only mode off just while you run it once.")
-                wanted = [q for q in wanted if existing.get(q)]
-            elif to_create:
+            if to_create:
                 created = api.create_rtsps_streams(cam_id, to_create)
                 existing.update(created or {})
             else:
@@ -8032,13 +8011,6 @@ class Plugin(indigo.PluginBase):
             api = controller["protect_api"]
             existing = api.get_rtsps_streams(cam_id) or {}
             if not existing.get("package"):
-                if is_read_only():
-                    self.logger.warning(
-                        f"{dev.name}: Read-only mode - the package lens has no RTSP stream and "
-                        f"one won't be created. Turn it on in the Protect app and run this "
-                        f"action again to read it, or turn read-only mode off just while you "
-                        f"run it once.")
-                    return
                 created = api.create_rtsps_streams(cam_id, ["package"])
                 existing.update(created or {})
             url = existing.get("package") or ""
@@ -8728,8 +8700,6 @@ class Plugin(indigo.PluginBase):
 
         Returns ("ssh"|"api", success_bool, error_message_or_None).
         """
-        if is_read_only():
-            return ("none", False, "read-only mode is on - fan mode not changed")
         log_name = dev_for_log.name if dev_for_log is not None else "fan"
         canonical_mode_lower = canonical_mode.lower()
 
@@ -8802,9 +8772,6 @@ class Plugin(indigo.PluginBase):
 
     def actionWakeUNAS(self, action):
         """Send a Wake-on-LAN magic packet to the UNAS using its MAC."""
-        if is_read_only():
-            self.logger.warning("Wake UNAS: not sent - read-only mode is on (Plugins > UniFi > Configure)")
-            return
         cid, controller, dev = self._get_drive_controller(action)
         if not controller:
             name = dev.name if dev else f"device {action.deviceId}"

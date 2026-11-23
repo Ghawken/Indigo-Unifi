@@ -6,10 +6,10 @@
 	
 	<Field id="readOnlyMode" type="checkbox" defaultValue="false">
 		<Label>Read-only mode:</Label>
-		<Description>Never change anything in UniFi</Description>
+		<Description>Never change UniFi Network settings</Description>
 	</Field>
 	<Field id="readOnlyHelp" type="label" fontSize="small" fontColor="darkgray">
-		<Label>When ticked, the plugin only reads from your UniFi consoles: devices, states, events, snapshots and existing RTSP stream URLs keep working, but every action or automation that would change UniFi (on/off, lock/unlock, reboot, PoE, firewall/WLAN/port forward, camera settings, creating RTSP streams, client purge, fan control, Wake-on-LAN) is blocked and logged instead of sent. Devices in Indigo are still created and updated as normal.</Label>
+		<Label>When ticked, the plugin never changes your UniFi Network application: firewall policies, traffic routes, port forwards, WLANs, PoE/port control, device restarts and client purge are blocked and logged instead of sent (client purge runs as a dry run). Protect, Access and Drive are not affected - cameras, RTSP streams, door unlocks, doorbells and the UNAS keep working as normal.</Label>
 	</Field>
 
 	<Field id="separator1" type="separator"/>
