@@ -36,7 +36,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.13.0"
+PLUGIN_VERSION       = "3.13.1"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -5843,6 +5843,10 @@ class Plugin(indigo.PluginBase):
         now = time.time() if now is None else now
         gate = controller.setdefault("gates", {}).setdefault(door_id, {})
         pos = self._dps_position(raw_position)
+        if pos and dev.pluginProps.get("gateInvertDps", False):
+            # Gate contacts are often wired the other way round from a
+            # door's (closed = contact open), so Access reads them reversed.
+            pos = "closed" if pos == "open" else "open"
         if pos is None:
             # No DPS wired: nothing says where the gate is, so assume each
             # move finishes after the travel time, and that it starts closed.

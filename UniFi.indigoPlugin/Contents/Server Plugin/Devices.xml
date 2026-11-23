@@ -1865,6 +1865,10 @@
 			<Field id="gateTravelSec" type="textfield" defaultValue="20" visibleBindingId="doorUse" visibleBindingValue="gate">
 				<Label>Travel time (seconds):</Label>
 			</Field>
+			<Field id="gateInvertDps" type="checkbox" defaultValue="false" visibleBindingId="doorUse" visibleBindingValue="gate">
+				<Label>Position sensor:</Label>
+				<Description>Reversed (shows open when the gate is closed)</Description>
+			</Field>
 			<Field id="gateCloseAction" type="menu" defaultValue="pulse" visibleBindingId="doorUse" visibleBindingValue="gate">
 				<Label>Close command:</Label>
 				<List>

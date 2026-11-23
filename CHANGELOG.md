@@ -4,6 +4,12 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.13.1] - Gate: reversed position sensor option
+
+New **Position sensor: Reversed** checkbox for gate use. A gate's closed-limit
+contact is often wired the opposite way to a door sensor, so Access reports
+the gate open when it's closed; ticking this swaps open and closed.
+
 ## [3.13.0] - Access doors can be used as a gate / garage door
 
 For a Door Hub (e.g. Door Hub Mini) wired to a gate or garage door opener
