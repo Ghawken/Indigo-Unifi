@@ -36,7 +36,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.12.19"
+PLUGIN_VERSION       = "3.13.0"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -54,6 +54,8 @@ DEFAULT_STATS_INTERVAL_SEC   = 300   # 5 min - configurable in controller UI
 DEFAULT_SANITY_INTERVAL_SEC  = 900   # 15 min - configurable
 AGGRESSIVE_INTERVAL_SEC      = 30    # only used when aggressive mode toggled
 DOOR_RELOCK_TIMEOUT_SEC      = 10    # momentary-unlock auto-relock window
+GATE_PULSE_SEC               = 5     # gate use: relock this long after a pulse
+GATE_TRAVEL_DEFAULT_SEC      = 20    # gate use: default full open/close time
 
 # WebSocket reconnect backoff
 WS_RECONNECT_INITIAL_SEC     = 5
@@ -3726,14 +3728,20 @@ class Plugin(indigo.PluginBase):
         # pluginProps. One-time fix-up, same idea as stateListOrDisplayStateIdChanged()
         # for states - existing devices don't retroactively pick up new
         # plugin-side props just because Devices.xml/creation code changed.
-        if not dev.pluginProps.get("IsLockSubType"):
+        #
+        # Gate use (3.13.0) is the exception: on/off there means open/closed,
+        # so it must not be a lock - Indigo would show Lock/Unlock buttons
+        # and lock icons, and send Lock/Unlock instead of Turn On/Off.
+        want_lock = not self._is_gate(dev)
+        if bool(dev.pluginProps.get("IsLockSubType", False)) != want_lock:
             try:
                 new_props = dev.pluginProps
-                new_props["IsLockSubType"] = True
+                new_props["IsLockSubType"] = want_lock
                 dev.replacePluginPropsOnServer(new_props)
             except Exception as e:
                 if self.debug:
                     self.logger.debug(f"{dev.name}: failed to set IsLockSubType: {e}")
+        controller.setdefault("gates", {}).pop(door_id, None)   # mode may have changed
 
         controller["doors"][door_id] = dev.id
         self._update_door_states(cid, door_id)
@@ -4235,7 +4243,25 @@ class Plugin(indigo.PluginBase):
                 del pending[door_id]
                 continue
             dev = indigo.devices[dev_id]
+
+            if info.get("gate"):
+                # Gate pulse: relock once the pulse time is up, whatever the
+                # position (the gate keeps moving on its own). Skipped if the
+                # hub has already relocked by itself.
+                if now - info.get("unlocked_at", now) >= GATE_PULSE_SEC:
+                    del pending[door_id]
+                    if not dev.states.get("isLocked", True):
+                        try:
+                            api.set_door_lock_rule(door_id, "lock_now")
+                            self._update_door_states(controller_id, door_id)
+                        except Exception as e:
+                            self.logger.error(f"{dev.name}: Relock after pulse failed: {e}")
+                continue
+
+            # Access reports a closed door as "close"; "closed" kept too.
             door_state = dev.states.get("doorState", "none")
+            if door_state == "close":
+                door_state = "closed"
 
             if door_state == "open":
                 info["opened"] = True
@@ -4320,6 +4346,8 @@ class Plugin(indigo.PluginBase):
         # (DOOR_RELOCK_TIMEOUT_SEC) is much shorter than either interval.
         if controller.get("door_relock_pending"):
             self._check_door_relocks(controller_id, now)
+        if controller.get("gates"):
+            self._check_gate_moves(controller_id)
 
         # Same "every tick, not gated" treatment as the door relock check
         # above - an event feed outage needs to be reflected immediately,
@@ -5771,6 +5799,129 @@ class Plugin(indigo.PluginBase):
     # State updates - Doors (Access)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Gate / garage door use of an Access door (doorUse = gate)
+    # ------------------------------------------------------------------
+    # A Door Hub wired to a gate or garage door opener: the relay is pulsed
+    # (a momentary unlock) to open or close it, and the door position sensor
+    # (DPS) input says where it is. Access only reports the DPS as open or
+    # closed, so the in-between states are worked out here from what was
+    # asked for and the configured travel time, in HomeKit's terms:
+    #   open / closed     - DPS position, no move in progress
+    #   opening / closing - a move is in progress (asked for here, or the
+    #                       DPS just left "closed", i.e. opened locally)
+    #   stopped           - a move didn't finish within the travel time;
+    #                       "obstructed" stays True until the position
+    #                       next changes or a move completes
+    # doorState carries these words, which HomeKitLink Siri's Garage Door
+    # reads ahead of onOffState, together with "obstructed".
+
+    @staticmethod
+    def _is_gate(dev):
+        return dev.pluginProps.get("doorUse", "door") == "gate"
+
+    @staticmethod
+    def _gate_travel_sec(dev):
+        try:
+            return max(1.0, float(dev.pluginProps.get("gateTravelSec") or GATE_TRAVEL_DEFAULT_SEC))
+        except (TypeError, ValueError):
+            return float(GATE_TRAVEL_DEFAULT_SEC)
+
+    @staticmethod
+    def _dps_position(raw):
+        """Access's door_position_status ("open" / "close") as "open" /
+        "closed", or None when the door has no position sensor."""
+        raw = str(raw or "").strip().lower()
+        if raw == "open":
+            return "open"
+        if raw in ("close", "closed"):
+            return "closed"
+        return None
+
+    def _gate_state(self, controller, door_id, dev, raw_position, now=None):
+        """(doorState, obstructed) for a gate, updating its move tracking."""
+        now = time.time() if now is None else now
+        gate = controller.setdefault("gates", {}).setdefault(door_id, {})
+        pos = self._dps_position(raw_position)
+        if pos is None:
+            # No DPS wired: nothing says where the gate is, so assume each
+            # move finishes after the travel time, and that it starts closed.
+            move = gate.get("move")
+            if move:
+                if now - move["since"] < self._gate_travel_sec(dev):
+                    return ("opening" if move["target"] == "open" else "closing"), False
+                gate["assumed"] = move["target"]
+                del gate["move"]
+            return gate.get("assumed", "closed"), False
+        prev = gate.get("position")
+        gate["position"] = pos
+        if prev is not None and pos != prev:
+            gate.pop("stopped", None)            # it moved: no longer stuck
+            if prev == "closed" and pos == "open" and "move" not in gate:
+                gate["move"] = {"target": "open", "since": now}   # opened locally
+
+        move = gate.get("move")
+        if move:
+            elapsed = now - move["since"]
+            travel = self._gate_travel_sec(dev)
+            if move["target"] == "open":
+                # The DPS is a closed-position contact on most gates: it
+                # says "open" as soon as the gate starts moving, so it only
+                # counts as fully open once the travel time has passed.
+                if pos == "open" and elapsed >= travel:
+                    del gate["move"]
+                elif pos == "open" or elapsed < travel:
+                    return "opening", False
+                else:
+                    del gate["move"]
+                    gate["stopped"] = pos
+                    self.logger.warning(f"{dev.name}: asked to open but still closed after {travel:g}s - obstructed?")
+            else:
+                if pos == "closed":
+                    del gate["move"]
+                elif elapsed < travel:
+                    return "closing", False
+                else:
+                    del gate["move"]
+                    gate["stopped"] = pos
+                    self.logger.warning(f"{dev.name}: asked to close but still open after {travel:g}s - obstructed?")
+        if gate.get("stopped") == pos:
+            return "stopped", True
+        gate.pop("stopped", None)
+        return pos, False
+
+    def _gate_command(self, dev, controller, cid, door_id, open_it):
+        """Open (True) or close (False) a gate by pulsing its relay."""
+        api = controller["access_api"]
+        state = dev.states.get("doorState", "")
+        want = "open" if open_it else "closed"
+        if state in (want, "opening" if open_it else "closing"):
+            self.logger.info(f"{dev.name}: already {state}")
+            return
+        if not open_it and dev.pluginProps.get("gateCloseAction", "pulse") == "none":
+            self.logger.info(f"{dev.name}: not pulsing to close - set to close by itself")
+            return
+        api.unlock_door(door_id)
+        # Always relocked shortly after (see _check_door_relocks): a relay
+        # held unlocked can hold some gate controllers open.
+        controller.setdefault("door_relock_pending", {})[door_id] = {
+            "unlocked_at": time.time(), "opened": False, "gate": True,
+        }
+        controller.setdefault("gates", {}).setdefault(door_id, {})["move"] = {
+            "target": want, "since": time.time()}
+        self.logger.info(f"{dev.name}: {'Opening' if open_it else 'Closing'} (relay pulsed)")
+        self._update_door_states(cid, door_id)
+
+    def _check_gate_moves(self, controller_id):
+        """Each tick, re-read gates that are moving, so opening/closing
+        turns into open/closed/stopped without waiting for a DPS change."""
+        controller = self.controllers.get(controller_id)
+        if not controller:
+            return
+        for door_id, gate in list(controller.get("gates", {}).items()):
+            if "move" in gate:
+                self._update_door_states(controller_id, door_id)
+
     def _update_door_states(self, controller_id, door_id):
         controller = self.controllers.get(controller_id)
         if not controller or "access_api" not in controller:
@@ -5813,7 +5964,19 @@ class Plugin(indigo.PluginBase):
                  "uiValue": "Locked" if is_locked else "Unlocked"},
             ]
             position = door.get("door_position_status")
-            if position:
+            if self._is_gate(dev):
+                # Gate use: replaces onOffState (on = not closed), status
+                # and doorState with the gate's position - see _gate_state.
+                gate_state, obstructed = self._gate_state(controller, door_id, dev, position)
+                states = [st for st in states if st["key"] not in ("status", "onOffState")]
+                states += [
+                    {"key": "status",     "value": gate_state},
+                    {"key": "doorState",  "value": gate_state},
+                    {"key": "obstructed", "value": obstructed},
+                    {"key": "onOffState", "value": gate_state != "closed",
+                     "uiValue": gate_state.capitalize()},
+                ]
+            elif position:
                 states.append({"key": "doorState", "value": position})
 
             try:
@@ -6654,6 +6817,15 @@ class Plugin(indigo.PluginBase):
         """Refuse to save a device whose required menu is still on the
         "(none found ...)" placeholder - otherwise its id would be stored
         and used as if it were a real UniFi object id."""
+        if typeId == "accessDoor" and valuesDict.get("doorUse") == "gate":
+            try:
+                ok = 1 <= float(valuesDict.get("gateTravelSec") or GATE_TRAVEL_DEFAULT_SEC) <= 600
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                errors = indigo.Dict()
+                errors["gateTravelSec"] = "Enter the time a full open or close takes, 1-600 seconds."
+                return (False, valuesDict, errors)
         required = self._PICK_REQUIRED.get(typeId)
         if required:
             field_id, label = required
@@ -8918,6 +9090,10 @@ class Plugin(indigo.PluginBase):
                 if not api:
                     return
                 door_id = dev.pluginProps.get("doorId", "")
+                if self._is_gate(dev):
+                    # Gate use: on = open, off = closed.
+                    self._gate_command(dev, controller, cid, door_id, bool(target))
+                    return
                 # target matches onOffState's convention (True=Locked,
                 # False=Unlocked, see 3.11.8).
                 if target:

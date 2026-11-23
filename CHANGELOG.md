@@ -4,6 +4,28 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.13.0] - Access doors can be used as a gate / garage door
+
+For a Door Hub (e.g. Door Hub Mini) wired to a gate or garage door opener
+with a momentary input, locked/unlocked doesn't describe anything useful.
+New **Used for** setting on the UniFi Access Door device: *Door lock*
+(default, unchanged) or *Gate / garage door*. In gate use:
+
+- Turn On opens and Turn Off closes, each by pulsing the relay (a momentary
+  unlock, relocked after 5 s). Close can be set to do nothing, for gates
+  that close themselves.
+- `doorState` is `open` / `closed` / `opening` / `closing` / `stopped`, from
+  the door position sensor plus a configurable travel time (Access only
+  reports open or closed). A move that doesn't finish within the travel
+  time shows `stopped` and sets the new `obstructed` state.
+- `onOffState` is on = not closed; the device is no longer a lock subtype.
+- HomeKitLink Siri: publish it as a Garage Door and tick *Enable to Invert
+  Controls* (on opens) - it reads `doorState` and `obstructed` directly.
+
+Also fixed: the momentary-unlock auto-relock waited for `doorState` to be
+`closed`, but Access reports a closed door as `close`, so it never saw the
+door close again and relied on the 10 s timeout.
+
 ## [3.12.19] - Read-only mode now only covers UniFi Network
 
 With read-only mode on, unlocking an Access door failed with `Read-only mode
