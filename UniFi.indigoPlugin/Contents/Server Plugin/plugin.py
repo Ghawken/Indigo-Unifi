@@ -36,7 +36,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.13.2"
+PLUGIN_VERSION       = "3.13.3"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443

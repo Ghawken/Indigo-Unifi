@@ -4,6 +4,14 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.13.3] - Install fails on Intel Macs
+
+Installing failed on Intel Macs with `Failed building wheel for cryptography`
+(needs Rust and OpenSSL). cryptography, which paramiko depends on, stopped
+publishing Intel macOS wheels in 49.0.0, so pip tried to build it from
+source. `requirements.txt` now caps it below 49 on Intel Macs only; Apple
+silicon is unaffected.
+
 ## [3.13.2] - Gate / door position going stale
 
 A gate that closed by itself kept showing `open`: Access doors were only
