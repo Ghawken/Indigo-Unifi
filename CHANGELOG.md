@@ -4,6 +4,18 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.14.2] - Gate: say when Access's door position never changes
+
+- When a gate move times out and Access's door position didn't change at all
+  during it, the warning now says so: the gate probably moved but Access
+  isn't seeing its position sensor (e.g. a reed magnet has come off).
+- Removed the gate **Position sensor: Reversed** checkbox (3.13.1). It was
+  added for a gate showing open when closed, which turned out to be stale
+  readings (fixed by polling in 3.13.2) and a failed sensor, not a reversed
+  one. Access has its own NO / NC setting for the sensor; a second reversal
+  in the plugin only caused confusion. If you had it ticked, set the sensor
+  type in Access instead.
+
 ## [3.14.1] - Debug in the log file no longer turns on Event Log debug
 
 With Log file level at Debugging and Event Log level at Informational, debug

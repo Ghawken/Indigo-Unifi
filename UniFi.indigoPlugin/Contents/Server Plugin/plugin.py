@@ -38,7 +38,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.14.1"
+PLUGIN_VERSION       = "3.14.2"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -5977,10 +5977,6 @@ class Plugin(indigo.PluginBase):
         now = time.time() if now is None else now
         gate = controller.setdefault("gates", {}).setdefault(door_id, {})
         pos = self._dps_position(raw_position)
-        if pos and dev.pluginProps.get("gateInvertDps", False):
-            # Gate contacts are often wired the other way round from a
-            # door's (closed = contact open), so Access reads them reversed.
-            pos = "closed" if pos == "open" else "open"
         if pos is None:
             # No DPS wired: nothing says where the gate is, so assume each
             # move finishes after the travel time, and that it starts closed.
@@ -5997,9 +5993,18 @@ class Plugin(indigo.PluginBase):
             gate.pop("stopped", None)            # it moved: no longer stuck
             if prev == "closed" and pos == "open" and "move" not in gate:
                 gate["move"] = {"target": "open", "since": now}   # opened locally
+            elif "move" in gate:
+                gate["move"]["sensor_changed"] = True
 
         move = gate.get("move")
         if move:
+            # Why a move timed out: if Access's position never changed at
+            # all, the gate may well have moved without Access seeing it
+            # (e.g. a reed magnet fallen off), so say so.
+            stuck_hint = "" if move.get("sensor_changed") else (
+                f" Access's door position didn't change at all during the move"
+                f" (still '{raw_position}'): if the gate did move, Access isn't"
+                f" seeing its door position sensor - check the sensor and magnet.")
             elapsed = now - move["since"]
             travel = self._gate_travel_sec(dev)
             if move["target"] == "open":
@@ -6013,7 +6018,7 @@ class Plugin(indigo.PluginBase):
                 else:
                     del gate["move"]
                     gate["stopped"] = now
-                    self.logger.warning(f"{dev.name}: asked to open but still closed after {travel:g}s - obstructed?")
+                    self.logger.warning(f"{dev.name}: asked to open but still closed after {travel:g}s - obstructed?{stuck_hint}")
             else:
                 if pos == "closed":
                     del gate["move"]
@@ -6022,7 +6027,7 @@ class Plugin(indigo.PluginBase):
                 else:
                     del gate["move"]
                     gate["stopped"] = now
-                    self.logger.warning(f"{dev.name}: asked to close but still open after {travel:g}s - obstructed?")
+                    self.logger.warning(f"{dev.name}: asked to close but still open after {travel:g}s - obstructed?{stuck_hint}")
         stopped_at = gate.get("stopped")
         if stopped_at is not None:
             if now - stopped_at < GATE_OBSTRUCTED_HOLD_SEC:
