@@ -16,6 +16,7 @@ import indigo
 
 import base64
 import json
+import logging
 import os
 import re
 import socket
@@ -37,7 +38,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.13.5"
+PLUGIN_VERSION       = "3.14.0"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -2928,7 +2929,8 @@ class Plugin(indigo.PluginBase):
 
     def __init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs):
         super(Plugin, self).__init__(pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
-        self.debug             = pluginPrefs.get("showDebugInfo", False)
+        self.debug             = False
+        self._setup_logging(pluginPrefs)
         set_read_only(pluginPrefs.get("readOnlyMode", False))
 
         # Per-controller state. See controllers dict structure below.
@@ -2950,6 +2952,52 @@ class Plugin(indigo.PluginBase):
         plugin_dir = self._find_plugin_dir()
         self.fan_script_content  = self._load_asset(plugin_dir, "indigo_fan_control.sh")
         self.fan_service_content = self._load_asset(plugin_dir, "indigo_fan_control.service")
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+    # Two independent levels, as in other Indigo plugins: what goes to the
+    # Indigo Event Log, and what goes to the plugin's own log file
+    # (Indigo's Logs/com.durosity.indigoplugin.unifi/plugin.log). So debug
+    # can be kept in the file long-term - to look back at after a problem -
+    # without filling the Event Log.
+    #
+    # Most debug messages are built behind `if self.debug:` (some are large,
+    # e.g. full WebSocket payloads), so self.debug is True whenever EITHER
+    # destination wants debug; each handler then filters to its own level.
+
+    LOG_LEVEL_DEFAULT = logging.INFO
+
+    def _log_levels(self, prefs):
+        def level(key, fallback):
+            try:
+                return int(prefs.get(key, fallback))
+            except (TypeError, ValueError):
+                return fallback
+        # Before 3.14.0 there was one checkbox, "Show debug info in event log".
+        legacy = logging.DEBUG if prefs.get("showDebugInfo", False) else self.LOG_LEVEL_DEFAULT
+        return (level("showDebugLevel", legacy),
+                level("showDebugFileLevel", self.LOG_LEVEL_DEFAULT))
+
+    def _setup_logging(self, prefs):
+        event_level, file_level = self._log_levels(prefs)
+        self.logger.setLevel(min(event_level, file_level, logging.DEBUG))
+        self.indigo_log_handler.setLevel(event_level)
+        self.plugin_file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s.%(msecs)03d\t%(levelname)s\t%(threadName)s\t%(funcName)s:\t%(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"))
+        self.plugin_file_handler.setLevel(file_level)
+        self._set_debug(min(event_level, file_level) <= logging.DEBUG)
+        return event_level, file_level
+
+    def _set_debug(self, enabled):
+        """Set self.debug here and on every API / WebSocket / SSH helper,
+        which each took a copy of it when they were created."""
+        self.debug = bool(enabled)
+        for controller in list(getattr(self, "controllers", {}).values()):
+            for obj in list(controller.values()):
+                if hasattr(obj, "debug") and hasattr(obj, "logger"):
+                    obj.debug = self.debug
 
     def _find_plugin_dir(self):
         """Locate the directory that contains plugin.py and the bundled assets.
@@ -3011,6 +3059,10 @@ class Plugin(indigo.PluginBase):
 
     def startup(self):
         self.logger.info(f"Starting UniFi Plugin v{PLUGIN_VERSION}")
+        event_level, file_level = self._log_levels(self.pluginPrefs)
+        if file_level <= logging.DEBUG or event_level <= logging.DEBUG:
+            self.logger.info(f"Debug logging: Event Log {logging.getLevelName(event_level)}, "
+                             f"file {logging.getLevelName(file_level)}")
         if is_read_only():
             self.logger.info("Read-only mode is ON - UniFi Network settings will not be changed (Protect, Access and Drive control still works)")
         self.stop_polling   = False
@@ -3061,8 +3113,9 @@ class Plugin(indigo.PluginBase):
     def closedPrefsConfigUi(self, valuesDict, userCancelled):
         if userCancelled:
             return True
-        self.debug = valuesDict.get("showDebugInfo", False)
-        self.logger.info(f"Debug mode: {'enabled' if self.debug else 'disabled'}")
+        event_level, file_level = self._setup_logging(valuesDict)
+        self.logger.info(f"Logging: Event Log {logging.getLevelName(event_level)}, "
+                         f"file {logging.getLevelName(file_level)}")
         was_read_only = is_read_only()
         set_read_only(valuesDict.get("readOnlyMode", False))
         if is_read_only() != was_read_only:
@@ -4238,8 +4291,15 @@ class Plugin(indigo.PluginBase):
 
     def _polling_loop(self, generation=0):
         """Tiered polling: stats interval (CPU/mem/temp), sanity interval (full re-sync)."""
+        last_alive_log = 0
         while not self.stop_polling and generation == self._poll_generation:
             self._poll_heartbeat = time.time()
+            if self.debug and self._poll_heartbeat - last_alive_log >= 600:
+                # A marker every 10 min, so a debug log shows when polling
+                # last ran if updates ever stop again.
+                last_alive_log = self._poll_heartbeat
+                self.logger.debug(f"Polling alive: {len(self.controllers)} controller(s), "
+                                  f"{threading.active_count()} threads")
             try:
                 now = time.time()
                 for cid in list(self.controllers.keys()):
@@ -6051,6 +6111,12 @@ class Plugin(indigo.PluginBase):
                 # Gate use: replaces onOffState (on = not closed), status
                 # and doorState with the gate's position - see _gate_state.
                 gate_state, obstructed = self._gate_state(controller, door_id, dev, position)
+                if self.debug and (gate_state != dev.states.get("doorState")
+                                   or obstructed != dev.states.get("obstructed")):
+                    self.logger.debug(
+                        f"{dev.name}: gate {dev.states.get('doorState')!r} -> {gate_state!r} "
+                        f"(Access door_position_status={position!r}, "
+                        f"relay={door.get('door_lock_relay_status')!r}, obstructed={obstructed})")
                 states = [st for st in states if st["key"] not in ("status", "onOffState")]
                 states += [
                     {"key": "status",     "value": gate_state},

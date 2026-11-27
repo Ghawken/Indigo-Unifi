@@ -4,6 +4,26 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.14.0] - Separate Event Log and log file levels
+
+The single "Show debug info in event log" checkbox is replaced by two
+levels in Plugins > UniFi > Configure, as in other Indigo plugins:
+
+- **Event Log level** and **Log file level** (Debugging / Informational /
+  Warning / Error), independent of each other. The log file is Indigo's
+  `Logs/com.durosity.indigoplugin.unifi/plugin.log`; with it at Debugging
+  the plugin keeps a detailed record to look back at, while the Event Log
+  stays quiet. File lines include the time to the millisecond, level,
+  thread and function.
+- An existing "Show debug info" setting carries over as Event Log level
+  Debugging.
+- Changing the level now also reaches the API, WebSocket and SSH helpers,
+  which previously kept the debug setting they were created with until
+  the plugin restarted.
+- With debug on: a "Polling alive" line every 10 minutes (shows when
+  polling last ran if updates stop), and a line for every gate state change
+  with the raw Access position and relay values.
+
 ## [3.13.5] - Polling watchdog
 
 After about a day, all polled state updates stopped (gate position included)
