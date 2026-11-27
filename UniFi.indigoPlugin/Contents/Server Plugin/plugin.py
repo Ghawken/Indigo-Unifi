@@ -21,6 +21,7 @@ import re
 import socket
 import ssl
 import struct
+import sys
 import zlib
 import threading
 import time
@@ -36,7 +37,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.13.4"
+PLUGIN_VERSION       = "3.13.5"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -57,6 +58,7 @@ DOOR_RELOCK_TIMEOUT_SEC      = 10    # momentary-unlock auto-relock window
 GATE_PULSE_SEC               = 5     # gate use: relock this long after a pulse
 GATE_TRAVEL_DEFAULT_SEC      = 20    # gate use: default full open/close time
 GATE_OBSTRUCTED_HOLD_SEC     = 30    # gate use: how long a failed move shows obstructed
+POLL_STALL_SEC               = 300   # polling thread silent this long = stuck; restart it
 
 # WebSocket reconnect backoff
 WS_RECONNECT_INITIAL_SEC     = 5
@@ -2253,6 +2255,14 @@ class UnifiDriveSSH:
         client = self._connect()
         try:
             stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+            # recv_exit_status() has no timeout of its own: on a hung
+            # command or dead connection it waits forever, freezing
+            # whichever thread called it (the polling thread for status
+            # checks).
+            if not stdout.channel.status_event.wait(timeout):
+                stdout.channel.close()
+                self.close()
+                raise UnifiSSHError(f"SSH command timed out after {timeout}s: {command}")
             exit_code = stdout.channel.recv_exit_status()
             out = stdout.read().decode("utf-8", errors="replace")
             err = stderr.read().decode("utf-8", errors="replace")
@@ -2929,6 +2939,11 @@ class Plugin(indigo.PluginBase):
 
         self.polling_thread    = None
         self.stop_polling      = False
+        # Polling watchdog (runConcurrentThread): the loop stamps
+        # _poll_heartbeat every tick; _poll_generation lets a replacement
+        # loop take over while a stuck one, if it ever wakes, exits.
+        self._poll_heartbeat   = time.time()
+        self._poll_generation  = 0
 
         # Load embedded fan control assets that the plugin deploys to UNAS
         # over SSH. These ship inside the plugin bundle, next to plugin.py.
@@ -2999,9 +3014,39 @@ class Plugin(indigo.PluginBase):
         if is_read_only():
             self.logger.info("Read-only mode is ON - UniFi Network settings will not be changed (Protect, Access and Drive control still works)")
         self.stop_polling   = False
-        self.polling_thread = threading.Thread(target=self._polling_loop, daemon=True,
-                                               name="unifi-poll")
+        self._start_polling_thread()
+
+    def _start_polling_thread(self):
+        self._poll_generation += 1
+        self._poll_heartbeat = time.time()
+        self.polling_thread = threading.Thread(target=self._polling_loop,
+                                               args=(self._poll_generation,), daemon=True,
+                                               name=f"unifi-poll-{self._poll_generation}")
         self.polling_thread.start()
+
+    def runConcurrentThread(self):
+        """Polling watchdog. Every state update not driven by a WebSocket
+        (door/gate positions, stats, re-syncs, relocks) runs on the one
+        polling thread, so if anything there blocks, the plugin goes quiet
+        without an error. If the loop hasn't ticked for POLL_STALL_SEC, log
+        where it is stuck and start a fresh one."""
+        try:
+            while True:
+                self.sleep(30)
+                stalled = time.time() - self._poll_heartbeat
+                if self.stop_polling or stalled < POLL_STALL_SEC:
+                    continue
+                where = "unknown"
+                thread = self.polling_thread
+                frame = sys._current_frames().get(thread.ident) if thread else None
+                if frame is not None:
+                    where = "".join(traceback.format_stack(frame)[-6:])
+                self.logger.error(
+                    f"Polling has been stuck for {stalled:.0f}s - starting a new polling "
+                    f"thread. Stuck at:\n{where}")
+                self._start_polling_thread()
+        except self.StopThread:
+            pass
 
     def shutdown(self):
         self.logger.info("Shutting down UniFi Plugin")
@@ -4191,12 +4236,16 @@ class Plugin(indigo.PluginBase):
     # Polling loop
     # ------------------------------------------------------------------
 
-    def _polling_loop(self):
+    def _polling_loop(self, generation=0):
         """Tiered polling: stats interval (CPU/mem/temp), sanity interval (full re-sync)."""
-        while not self.stop_polling:
+        while not self.stop_polling and generation == self._poll_generation:
+            self._poll_heartbeat = time.time()
             try:
                 now = time.time()
                 for cid in list(self.controllers.keys()):
+                    if generation != self._poll_generation:
+                        return   # replaced by the watchdog while stuck
+                    self._poll_heartbeat = time.time()
                     try:
                         self._poll_controller(cid, now)
                     except Exception as e:

@@ -4,6 +4,19 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.13.5] - Polling watchdog
+
+After about a day, all polled state updates stopped (gate position included)
+with nothing in the log. Every update that isn't pushed by a WebSocket -
+door/gate positions, stats, re-syncs, relocks - runs on one polling thread,
+and nothing noticed if that thread got stuck.
+
+- New watchdog (`runConcurrentThread`): if the polling loop hasn't ticked
+  for 5 minutes, it logs an error with where the loop is stuck, and starts
+  a new polling thread. The stuck one exits if it ever wakes.
+- SSH (UNAS fan control): `recv_exit_status()` waited forever on a hung
+  command or dead connection; it now times out with the command's timeout.
+
 ## [3.13.4] - Gate obstruction never cleared; now optional
 
 After a gate failed to finish a move, `stopped` / `obstructed` only cleared
