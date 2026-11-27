@@ -4,6 +4,22 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.13.4] - Gate obstruction never cleared; now optional
+
+After a gate failed to finish a move, `stopped` / `obstructed` only cleared
+once the position sensor next changed. A failed open with the gate still
+closed, or a sensor that doesn't change, left it obstructed indefinitely,
+and HomeKit kept showing the gate as obstructed.
+
+- A timed-out move now shows `stopped` for 30 s, then the gate reports its
+  sensor position again.
+- `obstructed` is only set for a timed-out move if the new **Obstructed**
+  checkbox is ticked (off by default). Access has no obstruction sensor, so
+  it's only a guess from the travel time, and HomeKit turns it into an
+  obstruction alert.
+- A new open/close command clears it straight away.
+- It still clears at once if the gate moves.
+
 ## [3.13.3] - Install fails on Intel Macs
 
 Installing failed on Intel Macs with `Failed building wheel for cryptography`

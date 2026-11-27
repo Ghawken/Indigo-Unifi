@@ -36,7 +36,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.13.3"
+PLUGIN_VERSION       = "3.13.4"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -56,6 +56,7 @@ AGGRESSIVE_INTERVAL_SEC      = 30    # only used when aggressive mode toggled
 DOOR_RELOCK_TIMEOUT_SEC      = 10    # momentary-unlock auto-relock window
 GATE_PULSE_SEC               = 5     # gate use: relock this long after a pulse
 GATE_TRAVEL_DEFAULT_SEC      = 20    # gate use: default full open/close time
+GATE_OBSTRUCTED_HOLD_SEC     = 30    # gate use: how long a failed move shows obstructed
 
 # WebSocket reconnect backoff
 WS_RECONNECT_INITIAL_SEC     = 5
@@ -5827,8 +5828,12 @@ class Plugin(indigo.PluginBase):
     #   opening / closing - a move is in progress (asked for here, or the
     #                       DPS just left "closed", i.e. opened locally)
     #   stopped           - a move didn't finish within the travel time;
-    #                       "obstructed" stays True until the position
-    #                       next changes or a move completes
+    #                       shown, with "obstructed", for
+    #                       GATE_OBSTRUCTED_HOLD_SEC, then back to the DPS
+    #                       position. It has to clear by itself: HomeKit
+    #                       keeps showing an obstructed gate until it does,
+    #                       and a gate that failed to move may not move
+    #                       again on its own to clear it.
     # doorState carries these words, which HomeKitLink Siri's Garage Door
     # reads ahead of onOffState, together with "obstructed".
 
@@ -5894,7 +5899,7 @@ class Plugin(indigo.PluginBase):
                     return "opening", False
                 else:
                     del gate["move"]
-                    gate["stopped"] = pos
+                    gate["stopped"] = now
                     self.logger.warning(f"{dev.name}: asked to open but still closed after {travel:g}s - obstructed?")
             else:
                 if pos == "closed":
@@ -5903,11 +5908,17 @@ class Plugin(indigo.PluginBase):
                     return "closing", False
                 else:
                     del gate["move"]
-                    gate["stopped"] = pos
+                    gate["stopped"] = now
                     self.logger.warning(f"{dev.name}: asked to close but still open after {travel:g}s - obstructed?")
-        if gate.get("stopped") == pos:
-            return "stopped", True
-        gate.pop("stopped", None)
+        stopped_at = gate.get("stopped")
+        if stopped_at is not None:
+            if now - stopped_at < GATE_OBSTRUCTED_HOLD_SEC:
+                # Access has no obstruction sensor: a timed-out move is only
+                # reported as an obstruction if asked to (gateReportObstructed),
+                # otherwise HomeKit raises obstruction alerts on a guess.
+                return "stopped", bool(dev.pluginProps.get("gateReportObstructed", False))
+            del gate["stopped"]
+            self.logger.info(f"{dev.name}: obstruction cleared - {pos}")
         return pos, False
 
     def _gate_command(self, dev, controller, cid, door_id, open_it):
@@ -5927,8 +5938,9 @@ class Plugin(indigo.PluginBase):
         controller.setdefault("door_relock_pending", {})[door_id] = {
             "unlocked_at": time.time(), "opened": False, "gate": True,
         }
-        controller.setdefault("gates", {}).setdefault(door_id, {})["move"] = {
-            "target": want, "since": time.time()}
+        gate = controller.setdefault("gates", {}).setdefault(door_id, {})
+        gate.pop("stopped", None)                # a new move clears an obstruction
+        gate["move"] = {"target": want, "since": time.time()}
         self.logger.info(f"{dev.name}: {'Opening' if open_it else 'Closing'} (relay pulsed)")
         self._update_door_states(cid, door_id)
 

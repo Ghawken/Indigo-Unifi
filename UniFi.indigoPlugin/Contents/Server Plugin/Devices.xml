@@ -1869,6 +1869,10 @@
 				<Label>Position sensor:</Label>
 				<Description>Reversed (shows open when the gate is closed)</Description>
 			</Field>
+			<Field id="gateReportObstructed" type="checkbox" defaultValue="false" visibleBindingId="doorUse" visibleBindingValue="gate">
+				<Label>Obstructed:</Label>
+				<Description>Set when a move doesn't finish within the travel time</Description>
+			</Field>
 			<Field id="gateCloseAction" type="menu" defaultValue="pulse" visibleBindingId="doorUse" visibleBindingValue="gate">
 				<Label>Close command:</Label>
 				<List>
@@ -1877,7 +1881,7 @@
 				</List>
 			</Field>
 			<Field id="gateHelp" type="label" fontSize="small" alignWithControl="true" visibleBindingId="doorUse" visibleBindingValue="gate">
-				<Label>Turn On opens and Turn Off closes, each by pulsing the relay (a momentary unlock). Position comes from the door position sensor (DPS) input: doorState is open / closed / opening / closing / stopped, and on = not closed. "Travel time" is how long a full open or close takes: the gate shows opening or closing for that long, and if it hasn't reached the end by then it shows stopped and "obstructed". Pick "Nothing" for Close command if your gate controller closes itself and a second pulse would re-open or hold it. Without a DPS wired the plugin can't see the gate: it assumes each command works and the move takes the travel time, and never reports obstructed. For HomeKitLink Siri, publish it as a Garage Door and tick "Enable to Invert Controls" (on opens).</Label>
+				<Label>Turn On opens and Turn Off closes, each by pulsing the relay (a momentary unlock). Position comes from the door position sensor (DPS) input: doorState is open / closed / opening / closing / stopped, and on = not closed. "Travel time" is how long a full open or close takes: the gate shows opening or closing for that long, and if it hasn't reached the end by then it shows stopped for 30 seconds (and "obstructed" too, if ticked - HomeKit shows that as an obstruction alert), then its real position again. Pick "Nothing" for Close command if your gate controller closes itself and a second pulse would re-open or hold it. Without a DPS wired the plugin can't see the gate: it assumes each command works and the move takes the travel time, and never reports obstructed. For HomeKitLink Siri, publish it as a Garage Door and tick "Enable to Invert Controls" (on opens).</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="instructionsLabel" type="label" fontSize="small" alignWithControl="true" visibleBindingId="doorUse" visibleBindingValue="door">
