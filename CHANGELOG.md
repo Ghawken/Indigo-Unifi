@@ -4,6 +4,14 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.14.1] - Debug in the log file no longer turns on Event Log debug
+
+With Log file level at Debugging and Event Log level at Informational, debug
+still showed in the Event Log. The plugin used Indigo's `self.debug` as its
+"debug wanted" flag, but that's a PluginBase property whose setter also
+switches the Event Log handler to DEBUG. The plugin now keeps its own flag
+(`self._debug`) and leaves Indigo's alone.
+
 ## [3.14.0] - Separate Event Log and log file levels
 
 The single "Show debug info in event log" checkbox is replaced by two

@@ -38,7 +38,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.14.0"
+PLUGIN_VERSION       = "3.14.1"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -2929,7 +2929,7 @@ class Plugin(indigo.PluginBase):
 
     def __init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs):
         super(Plugin, self).__init__(pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
-        self.debug             = False
+        self._debug             = False   # not Indigo's self.debug - see _set_debug
         self._setup_logging(pluginPrefs)
         set_read_only(pluginPrefs.get("readOnlyMode", False))
 
@@ -2962,8 +2962,8 @@ class Plugin(indigo.PluginBase):
     # can be kept in the file long-term - to look back at after a problem -
     # without filling the Event Log.
     #
-    # Most debug messages are built behind `if self.debug:` (some are large,
-    # e.g. full WebSocket payloads), so self.debug is True whenever EITHER
+    # Most debug messages are built behind `if self._debug:` (some are large,
+    # e.g. full WebSocket payloads), so self._debug is True whenever EITHER
     # destination wants debug; each handler then filters to its own level.
 
     LOG_LEVEL_DEFAULT = logging.INFO
@@ -2981,23 +2981,27 @@ class Plugin(indigo.PluginBase):
 
     def _setup_logging(self, prefs):
         event_level, file_level = self._log_levels(prefs)
+        self._set_debug(min(event_level, file_level) <= logging.DEBUG)
         self.logger.setLevel(min(event_level, file_level, logging.DEBUG))
         self.indigo_log_handler.setLevel(event_level)
         self.plugin_file_handler.setFormatter(logging.Formatter(
             "%(asctime)s.%(msecs)03d\t%(levelname)s\t%(threadName)s\t%(funcName)s:\t%(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"))
         self.plugin_file_handler.setLevel(file_level)
-        self._set_debug(min(event_level, file_level) <= logging.DEBUG)
         return event_level, file_level
 
     def _set_debug(self, enabled):
-        """Set self.debug here and on every API / WebSocket / SSH helper,
-        which each took a copy of it when they were created."""
-        self.debug = bool(enabled)
+        """Set self._debug here and the debug flag of every API / WebSocket
+        / SSH helper, which each took a copy of it when they were created.
+
+        Deliberately NOT Indigo's self.debug: that's a PluginBase property
+        whose setter also switches the Event Log handler to DEBUG, so using
+        it for "the log file wants debug" put debug in the Event Log too."""
+        self._debug = bool(enabled)
         for controller in list(getattr(self, "controllers", {}).values()):
             for obj in list(controller.values()):
                 if hasattr(obj, "debug") and hasattr(obj, "logger"):
-                    obj.debug = self.debug
+                    obj.debug = self._debug
 
     def _find_plugin_dir(self):
         """Locate the directory that contains plugin.py and the bundled assets.
@@ -3127,11 +3131,11 @@ class Plugin(indigo.PluginBase):
     # ------------------------------------------------------------------
 
     def triggerStartProcessing(self, trigger):
-        if self.debug:
+        if self._debug:
             self.logger.debug(f"Trigger started: {trigger.name} ({trigger.pluginTypeId})")
 
     def triggerStopProcessing(self, trigger):
-        if self.debug:
+        if self._debug:
             self.logger.debug(f"Trigger stopped: {trigger.name}")
 
     def _fire_trigger(self, event_id, device):
@@ -3145,7 +3149,7 @@ class Plugin(indigo.PluginBase):
             # "any" = "Any device" (empty too: triggers saved by versions
             # before 3.12.18, whose "Any" option had an empty id)
             if device_filter in ("", LIST_ID_ANY) or device_filter == str(device.id):
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"Firing trigger '{trigger.name}' for {device.name}")
                 indigo.trigger.execute(trigger)
 
@@ -3169,7 +3173,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.stateListOrDisplayStateIdChanged()
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"{dev.name}: stateListOrDisplayStateIdChanged() failed: {e}")
 
         type_id = dev.deviceTypeId
@@ -3295,7 +3299,7 @@ class Plugin(indigo.PluginBase):
                 net_api = UnifiNetworkAPI(
                     address, port, network_api_key,
                     legacy_user, legacy_pass, site=site,
-                    verify_ssl=verify_ssl, logger=self.logger, debug=self.debug,
+                    verify_ssl=verify_ssl, logger=self.logger, debug=self._debug,
                 )
                 controller["network_api"] = net_api
 
@@ -3332,7 +3336,7 @@ class Plugin(indigo.PluginBase):
                             logger=self.logger,
                             cookies=net_api.legacy_cookies,
                             bearer_token=None,
-                            debug=self.debug,
+                            debug=self._debug,
                             label=f"{dev.name}-net",
                             # Legacy cookie sessions expire; a 401 on
                             # reconnect usually just means we need a fresh
@@ -3354,7 +3358,7 @@ class Plugin(indigo.PluginBase):
                     protect_api = UnifiProtectAPI(
                         address, port, protect_api_key,
                         username=legacy_user, password=legacy_pass,
-                        verify_ssl=verify_ssl, logger=self.logger, debug=self.debug,
+                        verify_ssl=verify_ssl, logger=self.logger, debug=self._debug,
                     )
                     protect_api.test_connection()
                     protect_api.refresh_cache()
@@ -3384,7 +3388,7 @@ class Plugin(indigo.PluginBase):
                             logger=self.logger,
                             cookies=None,
                             api_key=protect_api_key,
-                            debug=self.debug,
+                            debug=self._debug,
                             label=f"{dev.name}-{label}",
                         )
                         ws.start()
@@ -3417,7 +3421,7 @@ class Plugin(indigo.PluginBase):
                                 logger=self.logger,
                                 cookies=protect_api.legacy_cookies,
                                 binary_passthrough=True,
-                                debug=self.debug,
+                                debug=self._debug,
                                 label=f"{dev.name}-protect-private",
                                 on_auth_failure=protect_api._legacy_login,
                             )
@@ -3443,7 +3447,7 @@ class Plugin(indigo.PluginBase):
                 try:
                     access_api = UnifiAccessAPI(
                         address, access_port, access_api_key,
-                        verify_ssl=verify_ssl, logger=self.logger, debug=self.debug,
+                        verify_ssl=verify_ssl, logger=self.logger, debug=self._debug,
                     )
                     access_api.test_connection()
                     controller["access_api"] = access_api
@@ -3458,7 +3462,7 @@ class Plugin(indigo.PluginBase):
                         logger=self.logger,
                         cookies=None,
                         bearer_token=access_api_key,
-                        debug=self.debug,
+                        debug=self._debug,
                         label=f"{dev.name}-access",
                     )
                     ws.start()
@@ -3488,7 +3492,7 @@ class Plugin(indigo.PluginBase):
 
         except Exception as e:
             self.logger.error(f"{dev.name}: Connection error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
             dev.updateStateOnServer("status", f"Error: {e}")
             dev.updateStateOnServer("connected", False)
@@ -3589,7 +3593,7 @@ class Plugin(indigo.PluginBase):
                     address, port, api_key=api_key,
                     username=legacy_user, password=legacy_pass,
                     verify_ssl=verify_ssl,
-                    logger=self.logger, debug=self.debug,
+                    logger=self.logger, debug=self._debug,
                 )
                 drive_api.test_connection()
                 controller["drive_api"] = drive_api
@@ -3621,11 +3625,11 @@ class Plugin(indigo.PluginBase):
             if ssh_enabled and ssh_user and ssh_pass:
                 ssh = UnifiDriveSSH(
                     address, ssh_port, ssh_user, ssh_pass,
-                    logger=self.logger, debug=self.debug,
+                    logger=self.logger, debug=self._debug,
                 )
                 controller["drive_ssh"] = ssh
                 # Don't try to connect yet — we'll lazy-connect when needed.
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"{dev.name}: SSH helper configured for {ssh_user}@{address}:{ssh_port}")
             else:
                 controller["drive_ssh"] = None
@@ -3648,14 +3652,14 @@ class Plugin(indigo.PluginBase):
             try:
                 self._update_drive_states(dev.id)
             except Exception as e:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"Initial drive state refresh failed: {e}")
 
             self.logger.info(f"{dev.name}: Connected")
 
         except Exception as e:
             self.logger.error(f"{dev.name}: UNAS connection error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
             try:
                 dev.updateStateOnServer("status", f"Error: {e}")
@@ -3838,7 +3842,7 @@ class Plugin(indigo.PluginBase):
                 new_props["IsLockSubType"] = want_lock
                 dev.replacePluginPropsOnServer(new_props)
             except Exception as e:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"{dev.name}: failed to set IsLockSubType: {e}")
         controller.setdefault("gates", {}).pop(door_id, None)   # mode may have changed
 
@@ -3905,7 +3909,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
     def _setup_trafficroute_link(self, dev):
@@ -3956,7 +3960,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
     def _setup_portforward_link(self, dev):
@@ -4009,7 +4013,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
     def _setup_wlan_link(self, dev):
@@ -4060,7 +4064,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
     def _setup_alarmprofile_link(self, dev):
@@ -4133,7 +4137,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
     def _mirror_states(self, dev_id, states):
@@ -4147,7 +4151,7 @@ class Plugin(indigo.PluginBase):
         try:
             indigo.devices[dev_id].updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"_mirror_states({dev_id}) failed: {e}")
 
     def _mirror_to_package_camera(self, controller_id, cam_id, states):
@@ -4233,13 +4237,13 @@ class Plugin(indigo.PluginBase):
             existing = api.get_rtsps_streams(cam_id) or {}
             states.append({"key": "rtspUrlPackage", "value": existing.get("package") or ""})
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"get_rtsps_streams for package camera failed: {e}")
 
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
     def _setup_fan_link(self, dev):
@@ -4294,7 +4298,7 @@ class Plugin(indigo.PluginBase):
         last_alive_log = 0
         while not self.stop_polling and generation == self._poll_generation:
             self._poll_heartbeat = time.time()
-            if self.debug and self._poll_heartbeat - last_alive_log >= 600:
+            if self._debug and self._poll_heartbeat - last_alive_log >= 600:
                 # A marker every 10 min, so a debug log shows when polling
                 # last ran if updates ever stop again.
                 last_alive_log = self._poll_heartbeat
@@ -4310,7 +4314,7 @@ class Plugin(indigo.PluginBase):
                         self._poll_controller(cid, now)
                     except Exception as e:
                         self.logger.error(f"Polling error on controller {cid}: {e}")
-                        if self.debug:
+                        if self._debug:
                             self.logger.error(traceback.format_exc())
             except Exception as e:
                 self.logger.error(f"Polling loop error: {e}")
@@ -4510,7 +4514,7 @@ class Plugin(indigo.PluginBase):
                     except Exception:
                         pass
             except Exception as e:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"Network stats refresh error: {e}")
 
         # Drive stats - always poll when API is connected, since the controller
@@ -4520,13 +4524,13 @@ class Plugin(indigo.PluginBase):
             try:
                 self._update_drive_states(controller_id)
             except Exception as e:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"Drive stats refresh error: {e}")
             if controller.get("fan_device"):
                 try:
                     self._update_fan_states(controller_id)
                 except Exception as e:
-                    if self.debug:
+                    if self._debug:
                         self.logger.debug(f"Fan stats refresh error: {e}")
             # Daily check: if fan control was deployed but its marker file is
             # now missing (UniFi OS update wiped /etc), silently redeploy.
@@ -4535,7 +4539,7 @@ class Plugin(indigo.PluginBase):
             try:
                 self._check_fan_control_deployment(controller_id)
             except Exception as e:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"Fan control deployment check error: {e}")
 
         # Access: doors were only ever re-read on a WebSocket event naming
@@ -4563,14 +4567,14 @@ class Plugin(indigo.PluginBase):
                 for sensor_id in list(controller["sensors"].keys()):
                     self._update_sensor_states(controller_id, sensor_id, refresh=False)
             except Exception as e:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"Protect stats refresh error: {e}")
 
     def _sanity_resync(self, controller_id):
         """Fully re-sync state in case WebSocket dropped messages.
         Currently performs the same work as stats refresh; kept as a separate
         method so we can later add deeper checks (auto-rediscover new devices, etc)."""
-        if self.debug:
+        if self._debug:
             self.logger.debug(f"Sanity re-sync for controller {controller_id}")
         self._refresh_stats(controller_id)
 
@@ -4578,7 +4582,7 @@ class Plugin(indigo.PluginBase):
         try:
             self._update_controller_states(controller_id)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Controller state refresh error: {e}")
 
     def _update_controller_states(self, controller_id):
@@ -4731,11 +4735,11 @@ class Plugin(indigo.PluginBase):
                     try:
                         self._parse_network_event(controller_id, event)
                     except Exception as e:
-                        if self.debug:
+                        if self._debug:
                             self.logger.debug(f"Event parse error: {e}")
 
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Network WS handler error: {e}")
 
     def _parse_network_event(self, controller_id, event):
@@ -4759,7 +4763,7 @@ class Plugin(indigo.PluginBase):
             except Exception:
                 when = ""
 
-        if self.debug and key and key not in _KNOWN_EVENT_KEYS:
+        if self._debug and key and key not in _KNOWN_EVENT_KEYS:
             self.logger.debug(f"Unrecognised UniFi event key: {key} ({msg})")
 
         event_states = [
@@ -4852,7 +4856,7 @@ class Plugin(indigo.PluginBase):
             # Lights / chimes can be added when device types exist
 
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Protect devices WS handler error: {e}")
 
     def _on_protect_events_ws(self, controller_id, message):
@@ -4916,7 +4920,7 @@ class Plugin(indigo.PluginBase):
             is_new_event  = bool(event_id) and event_id not in active_events
             is_repeat      = bool(event_id) and not is_new_event and end is None
 
-            if self.debug and isinstance(start_ms, (int, float)) and start_ms > 0:
+            if self._debug and isinstance(start_ms, (int, float)) and start_ms > 0:
                 if end is None and is_new_event:
                     lag = time.time() - (start_ms / 1000.0)
                     self.logger.debug(
@@ -4951,7 +4955,7 @@ class Plugin(indigo.PluginBase):
                     # fresh on every message (not a cached flag), so if the
                     # private connection ever drops, this resumes handling
                     # motion itself automatically until it's back.
-                    if self.debug:
+                    if self._debug:
                         self.logger.debug(
                             f"[Protect event timing] motion on {dev.name}: "
                             f"skipped (fast path active) - not fired again here"
@@ -5054,7 +5058,7 @@ class Plugin(indigo.PluginBase):
                 # only on the first message for each.
                 seen_rings = controller.setdefault("handled_ring_ids", [])
                 if event_id and event_id in seen_rings:
-                    if self.debug:
+                    if self._debug:
                         self.logger.debug(f"[Protect] ring update for an already-handled ring on {dev.name} - ignored")
                 else:
                     if event_id:
@@ -5079,7 +5083,7 @@ class Plugin(indigo.PluginBase):
             self._mirror_event_states_to_package_camera(controller_id, cam_id, dev)
 
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Protect events WS handler error: {e}")
 
     def _mirror_event_states_to_package_camera(self, controller_id, cam_id, dev):
@@ -5169,7 +5173,7 @@ class Plugin(indigo.PluginBase):
             active_events = controller.setdefault("active_private_motion_events", set())
             is_new_event  = bool(event_id) and event_id not in active_events
 
-            if self.debug and end is None and is_new_event and isinstance(start_ms, (int, float)) and start_ms > 0:
+            if self._debug and end is None and is_new_event and isinstance(start_ms, (int, float)) and start_ms > 0:
                 lag = time.time() - (start_ms / 1000.0)
                 self.logger.debug(
                     f"[Protect private-WS timing] motion on {dev.name}: "
@@ -5207,7 +5211,7 @@ class Plugin(indigo.PluginBase):
             ])
 
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Protect private WS handler error: {e}")
 
     def _on_access_ws(self, controller_id, message):
@@ -5264,7 +5268,7 @@ class Plugin(indigo.PluginBase):
             # community sources disagree on whether that data is WS or
             # webhook-only, so this checks directly against the real
             # controller rather than guessing further.
-            if self.debug:
+            if self._debug:
                 try:
                     self.logger.debug(
                         f"[Access WS event] type={event_type} door_id={door_id}\n"
@@ -5275,7 +5279,7 @@ class Plugin(indigo.PluginBase):
             if door_id and door_id in controller.get("doors", {}):
                 self._update_door_states(controller_id, door_id)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Access WS handler error: {e}")
 
     # ------------------------------------------------------------------
@@ -5301,7 +5305,7 @@ class Plugin(indigo.PluginBase):
             # published OpenAPI spec (which documents Ubiquiti's intent, not
             # necessarily every field a given console/firmware combination
             # actually sends - extra undocumented fields do happen).
-            if self.debug:
+            if self._debug:
                 try:
                     source = "fresh single-camera GET" if refresh else "bulk list / cached"
                     cam_dump = json.dumps(camera, default=str, indent=2)
@@ -5440,7 +5444,7 @@ class Plugin(indigo.PluginBase):
 
         except Exception as e:
             self.logger.error(f"Camera {camera_id} state update error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     # ------------------------------------------------------------------
@@ -5572,7 +5576,7 @@ class Plugin(indigo.PluginBase):
 
         except Exception as e:
             self.logger.error(f"Sensor {sensor_id} state update error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     # ------------------------------------------------------------------
@@ -5608,7 +5612,7 @@ class Plugin(indigo.PluginBase):
         # know what `type` string Ubiquiti uses for it to filter on - same
         # "enable debug, capture, disable again" pattern as every other
         # payload diagnosis this session (cameras, doors, etc).
-        if self.debug:
+        if self._debug:
             try:
                 dev_dump = json.dumps(device, default=str, indent=2)
                 if len(dev_dump) > 4000:
@@ -5763,7 +5767,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
         # Fire connection-state triggers
@@ -5839,7 +5843,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
         # Fire triggers
@@ -5909,7 +5913,7 @@ class Plugin(indigo.PluginBase):
             try:
                 dev.updateStatesOnServer(states)
             except Exception as e:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
             # Fire triggers
@@ -6111,7 +6115,7 @@ class Plugin(indigo.PluginBase):
                 # Gate use: replaces onOffState (on = not closed), status
                 # and doorState with the gate's position - see _gate_state.
                 gate_state, obstructed = self._gate_state(controller, door_id, dev, position)
-                if self.debug and (gate_state != dev.states.get("doorState")
+                if self._debug and (gate_state != dev.states.get("doorState")
                                    or obstructed != dev.states.get("obstructed")):
                     self.logger.debug(
                         f"{dev.name}: gate {dev.states.get('doorState')!r} -> {gate_state!r} "
@@ -6131,7 +6135,7 @@ class Plugin(indigo.PluginBase):
             try:
                 dev.updateStatesOnServer(states)
             except Exception as e:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"updateStatesOnServer({dev.name}) failed: {e}")
 
             # Fire triggers
@@ -6160,21 +6164,21 @@ class Plugin(indigo.PluginBase):
         try:
             storage  = api.get_storage_info() or {}
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Drive storage fetch error: {e}")
             storage = {}
 
         try:
             system = api.get_system_info() or {}
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Drive system fetch error: {e}")
             system = {}
 
         # Debug: dump the raw payloads so field-name mismatches are easy to
         # diagnose. Only fires when debug logging is enabled on the plugin.
         # JSON is truncated to ~4 KB per payload to avoid log spam.
-        if self.debug:
+        if self._debug:
             try:
                 storage_dump = json.dumps(storage, default=str, indent=2)
                 if len(storage_dump) > 4000:
@@ -6325,17 +6329,17 @@ class Plugin(indigo.PluginBase):
                                 ctrl_states.append({"key": "fanControlActiveMode", "value": ""})
                             controller["last_ssh_check_at"] = time.time()
                         except UnifiSSHError as e:
-                            if self.debug:
+                            if self._debug:
                                 self.logger.debug(f"SSH deployment check failed: {e}")
 
                 if ctrl_states:
                     try:
                         controller_dev.updateStatesOnServer(ctrl_states)
                     except Exception as e:
-                        if self.debug:
+                        if self._debug:
                             self.logger.debug(f"Controller updateStatesOnServer failed: {e}")
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Controller mirror error: {e}")
 
         # ---- Cascade: pool devices and disk devices ----
@@ -6468,7 +6472,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Pool update for {dev.name} failed: {e}")
 
     def _update_disk_states(self, controller_id, disk_key):
@@ -6546,7 +6550,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Disk update for {dev.name} failed: {e}")
 
     def _check_fan_control_deployment(self, controller_id):
@@ -6595,11 +6599,11 @@ class Plugin(indigo.PluginBase):
         # Check if still installed
         try:
             if ssh.is_deployed():
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"{cdev.name}: Fan control deployment intact.")
                 return
         except UnifiSSHError as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"{cdev.name}: Fan control deployment check failed: {e}")
             return
 
@@ -6634,7 +6638,7 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"{cdev.name}: Auto-redeploy failed: {e}")
         except Exception as e:
             self.logger.error(f"{cdev.name}: Unexpected auto-redeploy error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def _update_fan_states(self, controller_id):
@@ -6657,7 +6661,7 @@ class Plugin(indigo.PluginBase):
 
             # Debug: surface the raw fan payload so the field names / shapes
             # for fan-control endpoints can be diagnosed.
-            if self.debug:
+            if self._debug:
                 try:
                     fan_dump = json.dumps(fan, default=str, indent=2)
                     if len(fan_dump) > 2000:
@@ -6702,7 +6706,7 @@ class Plugin(indigo.PluginBase):
                                 if m:
                                     per_fan_rpm[int(m.group(1))] = value
                     except Exception as e:
-                        if self.debug:
+                        if self._debug:
                             self.logger.debug(f"Fan RPM read failed: {e}")
 
                     try:
@@ -6720,10 +6724,10 @@ class Plugin(indigo.PluginBase):
                         }
                         display_mode = mode_map.get(ssh_mode.lower(), "Default")
                         source = "ssh"
-                        if self.debug:
+                        if self._debug:
                             self.logger.debug(f"Fan mode source: SSH conf = {ssh_mode}")
                     except Exception as e:
-                        if self.debug:
+                        if self._debug:
                             self.logger.debug(f"SSH fan mode read failed, falling back to API: {e}")
 
             if display_mode is None:
@@ -6771,7 +6775,7 @@ class Plugin(indigo.PluginBase):
 
             dev.updateStatesOnServer(states)
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"Fan state update error: {e}")
 
     # ------------------------------------------------------------------
@@ -6806,7 +6810,7 @@ class Plugin(indigo.PluginBase):
                 try:
                     net = UnifiNetworkAPI(address, port, net_key, "", "",
                                           site=site, verify_ssl=verify_ssl,
-                                          logger=self.logger, debug=self.debug)
+                                          logger=self.logger, debug=self._debug)
                     net.test_integration()
                     self.logger.info("✓ Network Integration API: OK")
                 except UnifiAuthError as e:
@@ -6821,7 +6825,7 @@ class Plugin(indigo.PluginBase):
                 try:
                     net = UnifiNetworkAPI(address, port, "", user, pwd,
                                           site=site, verify_ssl=verify_ssl,
-                                          logger=self.logger, debug=self.debug)
+                                          logger=self.logger, debug=self._debug)
                     net.test_legacy()
                     self.logger.info("✓ Network Legacy auth: OK")
                 except UnifiAuthError as e:
@@ -6837,7 +6841,7 @@ class Plugin(indigo.PluginBase):
                     p = UnifiProtectAPI(address, port, protect_key,
                                         username=user, password=pwd,
                                         verify_ssl=verify_ssl,
-                                        logger=self.logger, debug=self.debug)
+                                        logger=self.logger, debug=self._debug)
                     p.test_connection()
                     p.refresh_cache()
                     self.logger.info(f"✓ Protect API: OK ({len(p.get_cameras())} cameras, "
@@ -6866,7 +6870,7 @@ class Plugin(indigo.PluginBase):
                 try:
                     a = UnifiAccessAPI(address, access_port, access_key,
                                        verify_ssl=verify_ssl,
-                                       logger=self.logger, debug=self.debug)
+                                       logger=self.logger, debug=self._debug)
                     doors = a.get_doors()
                     self.logger.info(f"✓ Access API: OK ({len(doors)} doors on port {access_port})")
                 except UnifiAuthError as e:
@@ -6880,7 +6884,7 @@ class Plugin(indigo.PluginBase):
             return valuesDict
         except Exception as e:
             self.logger.error(f"Test error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
             return valuesDict
 
@@ -6907,7 +6911,7 @@ class Plugin(indigo.PluginBase):
                 try:
                     d = UnifiDriveAPI(address, port, api_key=api_key,
                                       verify_ssl=verify_ssl,
-                                      logger=self.logger, debug=self.debug)
+                                      logger=self.logger, debug=self._debug)
                     d.test_connection()
                     self.logger.info("✓ UNAS API key auth: OK")
                 except UnifiAuthError as e:
@@ -6922,7 +6926,7 @@ class Plugin(indigo.PluginBase):
                     d = UnifiDriveAPI(address, port, api_key="",
                                       username=user, password=pwd,
                                       verify_ssl=verify_ssl,
-                                      logger=self.logger, debug=self.debug)
+                                      logger=self.logger, debug=self._debug)
                     d.test_connection()
                     self.logger.info("✓ UNAS legacy auth: OK")
                 except UnifiAuthError as e:
@@ -6936,7 +6940,7 @@ class Plugin(indigo.PluginBase):
             return valuesDict
         except Exception as e:
             self.logger.error(f"UNAS test error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
             return valuesDict
 
@@ -7023,7 +7027,7 @@ class Plugin(indigo.PluginBase):
                     continue  # confirmed NOT to have one - skip
                 out.append((str(d.id), d.name))
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"getPackageCameraParentList error: {e}")
         if not out:
             out = [(LIST_ID_NONE, "(no cameras found - create the parent camera device first, "
@@ -7050,7 +7054,7 @@ class Plugin(indigo.PluginBase):
                     if not p.get("predefined", False):
                         out.append((p.get("_id", ""), p.get("name", "Unnamed")))
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"getFirewallPolicyList error: {e}")
         if not out:
             out = [(LIST_ID_NONE, "(none found - pick the controller above first)")]
@@ -7068,7 +7072,7 @@ class Plugin(indigo.PluginBase):
                     label = r.get("description") or "(unnamed route)"
                     out.append((r.get("_id", ""), label))
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"getTrafficRouteList error: {e}")
         if not out:
             out = [(LIST_ID_NONE, "(none found - pick the controller above first)")]
@@ -7085,7 +7089,7 @@ class Plugin(indigo.PluginBase):
                     label = f.get("name") or "(unnamed forward)"
                     out.append((f.get("_id", ""), label))
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"getPortForwardList error: {e}")
         if not out:
             out = [(LIST_ID_NONE, "(none found - pick the controller above first)")]
@@ -7102,7 +7106,7 @@ class Plugin(indigo.PluginBase):
                     label = w.get("name") or "(unnamed WLAN)"
                     out.append((w.get("_id", ""), label))
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"getWLANList error: {e}")
         if not out:
             out = [(LIST_ID_NONE, "(none found - pick the controller above first)")]
@@ -7133,7 +7137,7 @@ class Plugin(indigo.PluginBase):
                     if modes:
                         return [(m, labels.get(m, m)) for m in modes]
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"getVideoModeList error: {e}")
         return [(k, f"{v} (unverified)") for k, v in labels.items()]
 
@@ -7155,7 +7159,7 @@ class Plugin(indigo.PluginBase):
                         value = p.get("id") or p.get("_id") or ""
                         out.append((value, label))
         except Exception as e:
-            if self.debug:
+            if self._debug:
                 self.logger.debug(f"getArmProfileList error: {e}")
         if not out:
             out = [(LIST_ID_NONE, "(none found - this is expected if Alarm Manager isn't set up, "
@@ -7339,7 +7343,7 @@ class Plugin(indigo.PluginBase):
             self.logger.info(f"Camera discovery: {created} new device(s) created, {len(cameras)} total")
         except Exception as e:
             self.logger.error(f"Error discovering cameras: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         self.createPackageCameraDevices(valuesDict, "protectPackageCamera", controller_id)
         return valuesDict
@@ -7719,7 +7723,7 @@ class Plugin(indigo.PluginBase):
 
         ssh = UnifiDriveSSH(
             address, ssh_port, ssh_user, ssh_pass,
-            logger=self.logger, debug=self.debug,
+            logger=self.logger, debug=self._debug,
         )
         return ssh, address, None
 
@@ -7753,7 +7757,7 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"Fan control diagnostic failed: {e}")
         except Exception as e:
             self.logger.error(f"Unexpected error running fan diagnostic: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         finally:
             if ssh is not None:
@@ -7811,7 +7815,7 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"Fan control deploy failed: {e}")
         except Exception as e:
             self.logger.error(f"Unexpected error deploying fan control: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         finally:
             if ssh is not None:
@@ -7849,7 +7853,7 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"Fan control removal failed: {e}")
         except Exception as e:
             self.logger.error(f"Unexpected error removing fan control: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         finally:
             if ssh is not None:
@@ -7895,7 +7899,7 @@ class Plugin(indigo.PluginBase):
             self.logger.info(f"Pool discovery: {created} new device(s) created, {len(pools)} total")
         except Exception as e:
             self.logger.error(f"Error discovering pools: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -7952,7 +7956,7 @@ class Plugin(indigo.PluginBase):
             self.logger.info(f"Disk discovery: {created} new device(s) created, {len(disks)} total")
         except Exception as e:
             self.logger.error(f"Error discovering disks: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8122,7 +8126,7 @@ class Plugin(indigo.PluginBase):
             self._update_camera_states(cid, cam_id)
         except Exception as e:
             self.logger.error(f"enableDetections error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionSetHDRMode(self, action):
@@ -8143,7 +8147,7 @@ class Plugin(indigo.PluginBase):
             self._update_camera_states(cid, cam_id)
         except Exception as e:
             self.logger.error(f"setHDRMode error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionSetMicVolume(self, action):
@@ -8167,7 +8171,7 @@ class Plugin(indigo.PluginBase):
             self._update_camera_states(cid, cam_id)
         except Exception as e:
             self.logger.error(f"setMicVolume error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionSetVideoMode(self, action):
@@ -8188,7 +8192,7 @@ class Plugin(indigo.PluginBase):
             self._update_camera_states(cid, cam_id)
         except Exception as e:
             self.logger.error(f"setVideoMode error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionRebootCamera(self, action):
@@ -8276,7 +8280,7 @@ class Plugin(indigo.PluginBase):
                     {"key": "rtspUrlPackage", "value": existing.get("package") or ""}])
         except Exception as e:
             self.logger.error(f"enableRtspStreaming error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionDisableRtspStreaming(self, action):
@@ -8304,7 +8308,7 @@ class Plugin(indigo.PluginBase):
             self._mirror_to_package_camera(cid, cam_id, [{"key": "rtspUrlPackage", "value": ""}])
         except Exception as e:
             self.logger.error(f"disableRtspStreaming error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionEnablePackageCameraRtsp(self, action):
@@ -8340,7 +8344,7 @@ class Plugin(indigo.PluginBase):
             self.logger.info(f"{dev.name}: RTSP streaming enabled")
         except Exception as e:
             self.logger.error(f"enablePackageCameraRtsp error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionDisablePackageCameraRtsp(self, action):
@@ -8367,7 +8371,7 @@ class Plugin(indigo.PluginBase):
             self.logger.info(f"{dev.name}: RTSP streaming disabled")
         except Exception as e:
             self.logger.error(f"disablePackageCameraRtsp error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionDumpCameraPayload(self, action):
@@ -8419,7 +8423,7 @@ class Plugin(indigo.PluginBase):
                 pass
         except Exception as e:
             self.logger.error(f"dumpCameraPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     # ------------------------------------------------------------------
@@ -8456,7 +8460,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpNetworkDevicePayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8529,7 +8533,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpClientPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8556,7 +8560,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpDoorPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8583,7 +8587,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpSensorPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8623,7 +8627,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpPortPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8653,7 +8657,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpFirewallPolicyPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8680,7 +8684,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpTrafficRoutePayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8707,7 +8711,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpPortForwardPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8740,7 +8744,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpWLANPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8792,7 +8796,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpAlarmProfilePayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8842,7 +8846,7 @@ class Plugin(indigo.PluginBase):
             )
         except Exception as e:
             self.logger.error(f"dumpPackageCameraPayload error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
         return valuesDict
 
@@ -8959,7 +8963,7 @@ class Plugin(indigo.PluginBase):
             self._update_wlan_states(cid, wlan_id)
         except Exception as e:
             self.logger.error(f"changeWLANPassword error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     # ------------------------------------------------------------------
@@ -9049,7 +9053,7 @@ class Plugin(indigo.PluginBase):
                             pass
                     return ("ssh", True, None)
                 else:
-                    if self.debug:
+                    if self._debug:
                         self.logger.debug(
                             f"{log_name}: SSH configured but fan control not deployed — "
                             f"falling through to REST API (which is read-only on current firmware)"
@@ -9332,7 +9336,7 @@ class Plugin(indigo.PluginBase):
 
         except Exception as e:
             self.logger.error(f"actionControlDevice error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def actionControlSpeedControl(self, action, dev):
@@ -9399,7 +9403,7 @@ class Plugin(indigo.PluginBase):
                 self._update_fan_states(cid)
                 return
             else:
-                if self.debug:
+                if self._debug:
                     self.logger.debug(f"{dev.name}: Unhandled speed control action: {cmd}")
                 return
 
@@ -9412,7 +9416,7 @@ class Plugin(indigo.PluginBase):
             self._update_fan_states(cid)
         except Exception as e:
             self.logger.error(f"actionControlSpeedControl error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     # ------------------------------------------------------------------
@@ -9631,7 +9635,7 @@ class Plugin(indigo.PluginBase):
             self._purge_randomised_clients(dev.id)
         except Exception as e:
             self.logger.error(f"purgeRandomisedClients error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def _purge_randomised_clients(self, controller_id):
@@ -9800,7 +9804,7 @@ class Plugin(indigo.PluginBase):
             self.logger.info(f"Alarm Manager webhook triggered: {trigger_id}")
         except Exception as e:
             self.logger.error(f"triggerAlarmWebhook error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverCameras(self, action):
@@ -9809,7 +9813,7 @@ class Plugin(indigo.PluginBase):
             self.createCameraDevices(action.props, "protectCamera", cid)
         except Exception as e:
             self.logger.error(f"menuDiscoverCameras error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverNetworkDevices(self, action):
@@ -9818,7 +9822,7 @@ class Plugin(indigo.PluginBase):
             self.createNetworkDevices(action.props, "networkDevice", cid)
         except Exception as e:
             self.logger.error(f"menuDiscoverNetworkDevices error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverFirewallPolicies(self, action):
@@ -9827,7 +9831,7 @@ class Plugin(indigo.PluginBase):
             self.createFirewallPolicyDevices(action.props, "firewallPolicy", cid)
         except Exception as e:
             self.logger.error(f"menuDiscoverFirewallPolicies error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverTrafficRoutes(self, action):
@@ -9836,7 +9840,7 @@ class Plugin(indigo.PluginBase):
             self.createTrafficRouteDevices(action.props, "trafficRoute", cid)
         except Exception as e:
             self.logger.error(f"menuDiscoverTrafficRoutes error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverPortForwards(self, action):
@@ -9845,7 +9849,7 @@ class Plugin(indigo.PluginBase):
             self.createPortForwardDevices(action.props, "portForward", cid)
         except Exception as e:
             self.logger.error(f"menuDiscoverPortForwards error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverWLANs(self, action):
@@ -9854,7 +9858,7 @@ class Plugin(indigo.PluginBase):
             self.createWLANDevices(action.props, "wlanDevice", cid)
         except Exception as e:
             self.logger.error(f"menuDiscoverWLANs error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverAlarmProfiles(self, action):
@@ -9863,7 +9867,7 @@ class Plugin(indigo.PluginBase):
             self.createAlarmProfileDevices(action.props, "alarmProfile", cid)
         except Exception as e:
             self.logger.error(f"menuDiscoverAlarmProfiles error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverAllClients(self, action):
@@ -9876,7 +9880,7 @@ class Plugin(indigo.PluginBase):
             self._discover_clients(cid, include_known=True, min_days=min_days)
         except Exception as e:
             self.logger.error(f"menuDiscoverAllClients error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuDiscoverUnknownClients(self, action):
@@ -9885,7 +9889,7 @@ class Plugin(indigo.PluginBase):
             self._discover_clients(cid, include_known=False, min_days=0)
         except Exception as e:
             self.logger.error(f"menuDiscoverUnknownClients error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     def menuRemoveMissingClients(self, action):
@@ -9894,7 +9898,7 @@ class Plugin(indigo.PluginBase):
             self._remove_missing_clients(cid)
         except Exception as e:
             self.logger.error(f"menuRemoveMissingClients error: {e}")
-            if self.debug:
+            if self._debug:
                 self.logger.error(traceback.format_exc())
 
     # ----- Client discovery internals -----
