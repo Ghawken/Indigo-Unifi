@@ -1952,6 +1952,38 @@
 				<TriggerLabel>Last Access User</TriggerLabel>
 				<ControlPageLabel>Last User</ControlPageLabel>
 			</State>
+			<State id="lastAccessMethod">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last Access Method</TriggerLabel>
+				<ControlPageLabel>Last Method</ControlPageLabel>
+			</State>
+			<State id="lastDeniedUser">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last Denied User</TriggerLabel>
+				<ControlPageLabel>Denied User</ControlPageLabel>
+			</State>
+			<State id="lastDeniedTime">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last Denied Time</TriggerLabel>
+				<ControlPageLabel>Denied Time</ControlPageLabel>
+			</State>
+
+			<!-- From Access's door / hub updates -->
+			<State id="hubOnline">
+				<ValueType boolType="YesNo">Boolean</ValueType>
+				<TriggerLabel>Hub Online</TriggerLabel>
+				<ControlPageLabel>Hub Online</ControlPageLabel>
+			</State>
+			<State id="emergency">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Emergency Mode (none / lockdown / evacuation)</TriggerLabel>
+				<ControlPageLabel>Emergency</ControlPageLabel>
+			</State>
+			<State id="positionSensorConnected">
+				<ValueType boolType="YesNo">Boolean</ValueType>
+				<TriggerLabel>Position Sensor Wired</TriggerLabel>
+				<ControlPageLabel>DPS Wired</ControlPageLabel>
+			</State>
 		</States>
 		<!-- Without this, a relay-type device defaults to showing the
 		     generic onOffState (on/off) as its primary status. That state

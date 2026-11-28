@@ -4,6 +4,29 @@ All notable changes to this project are documented here. This starts at
 3.2.0 (the official-Integration-API rewrite); earlier history predates
 public release.
 
+## [3.14.3] - Access doors: fill Last Access and device info states
+
+The Access Door device's **lastAccessUser**, **lastAccessTime**,
+**deviceType** and **firmwareVersion** states were declared but never
+written, so they stayed blank. They now come from the Access WebSocket:
+
+- Last access user and time from each granted door event (`access.logs.add`):
+  the person's name for NFC / PIN / face, or the API token's name for an
+  unlock from Indigo.
+- Device type and firmware from the door's hub (`device.update` events).
+
+New states, from the same WebSocket events:
+
+- **lastAccessMethod**: Remote / NFC / PIN / Face / Mobile, etc.
+- **lastDeniedUser**, **lastDeniedTime**: the last refused attempt.
+- **hubOnline**: the door's hub is online.
+- **emergency**: none / lockdown / evacuation, with a warning when it starts.
+- **positionSensorConnected**: Access sees a sensor wired. This is wiring only:
+  a reed whose magnet has fallen off still reads as connected.
+
+The Developer API's door object has none of these, so they fill in on the
+first unlock or hub update after the plugin starts.
+
 ## [3.14.2] - Gate: say when Access's door position never changes
 
 - When a gate move times out and Access's door position didn't change at all

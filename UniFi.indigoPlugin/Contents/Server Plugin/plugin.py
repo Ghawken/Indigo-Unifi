@@ -38,7 +38,7 @@ from http.cookiejar import CookieJar
 # Constants
 # ============================================================================
 
-PLUGIN_VERSION       = "3.14.2"
+PLUGIN_VERSION       = "3.14.3"
 
 # Default ports
 DEFAULT_HTTPS_PORT   = 443
@@ -56,6 +56,12 @@ DEFAULT_STATS_INTERVAL_SEC   = 300   # 5 min - configurable in controller UI
 DEFAULT_SANITY_INTERVAL_SEC  = 900   # 15 min - configurable
 AGGRESSIVE_INTERVAL_SEC      = 30    # only used when aggressive mode toggled
 DOOR_RELOCK_TIMEOUT_SEC      = 10    # momentary-unlock auto-relock window
+# Access log credential_provider -> lastAccessMethod (others are title-cased)
+ACCESS_METHODS = {
+    "REMOTE_THROUGH_UAH": "Remote", "NFC": "NFC", "PIN_CODE": "PIN", "PIN": "PIN",
+    "FACE": "Face", "MOBILE_TAP": "Mobile", "MOBILE": "Mobile", "TOUCH_PASS": "Touch Pass",
+    "QR_CODE": "QR code", "BUTTON": "Exit button", "WAVE": "Wave",
+}
 GATE_PULSE_SEC               = 5     # gate use: relock this long after a pulse
 GATE_TRAVEL_DEFAULT_SEC      = 20    # gate use: default full open/close time
 GATE_OBSTRUCTED_HOLD_SEC     = 30    # gate use: how long a failed move shows obstructed
@@ -5276,11 +5282,95 @@ class Plugin(indigo.PluginBase):
                 except Exception:
                     self.logger.debug(f"[Access WS event] type={event_type} (not JSON-serialisable)")
 
+            if isinstance(data, dict):
+                self._door_ws_info(controller, event_type, data)
             if door_id and door_id in controller.get("doors", {}):
                 self._update_door_states(controller_id, door_id)
         except Exception as e:
             if self._debug:
                 self.logger.debug(f"Access WS handler error: {e}")
+
+    def _door_ws_info(self, controller, event_type, data):
+        """Door states the Developer API's door object doesn't carry, so they
+        only come from the WebSocket and fill in on the first event:
+          * access.logs.add: lastAccess* for granted, lastDenied* for refused
+          * hub device updates: deviceType, firmwareVersion, hubOnline
+          * door location state (location.update / v2 device.update):
+            emergency (none / lockdown / evacuation) and
+            positionSensorConnected (dps_connected - wiring only: a reed
+            whose magnet has come off still reads as connected)"""
+        doors = controller.get("doors", {})
+
+        def door_dev(door_id):
+            dev_id = doors.get(door_id)
+            return indigo.devices[dev_id] if dev_id and dev_id in indigo.devices else None
+
+        def update(dev, values):
+            changed = [{"key": k, "value": v} for k, v in values.items()
+                       if v and str(dev.states.get(k, "")) != str(v)]
+            if changed:
+                dev.updateStatesOnServer(changed)
+
+        if event_type == "access.logs.add":
+            src = data.get("_source") or {}
+            event = src.get("event") or {}
+            if not str(event.get("type", "")).startswith("access.door."):
+                return
+            door_id = next((t.get("id") for t in src.get("target") or []
+                            if isinstance(t, dict) and t.get("type") == "door"), None)
+            dev = door_dev(door_id)
+            if not dev:
+                return
+            published = event.get("published")
+            try:
+                when = time.localtime(float(published) / 1000) if published else time.localtime()
+            except (TypeError, ValueError):
+                when = time.localtime()
+            user = (src.get("actor") or {}).get("display_name") or ""
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", when)
+            if event.get("result") == "ACCESS":
+                provider = str((src.get("authentication") or {}).get("credential_provider") or "")
+                update(dev, {
+                    "lastAccessUser":   user or event.get("display_message"),
+                    "lastAccessTime":   stamp,
+                    "lastAccessMethod": ACCESS_METHODS.get(provider.upper(), provider.replace("_", " ").title()),
+                })
+            else:
+                update(dev, {"lastDeniedUser": user or "Unknown", "lastDeniedTime": stamp})
+            return
+
+        # Door position / emergency state, as location.update's "state" or
+        # a v2 device.update's "location_states".
+        loc_states = [dict(data.get("state"), location_id=data.get("id"))] \
+            if event_type == "access.data.v2.location.update" and isinstance(data.get("state"), dict) else \
+            [x for x in data.get("location_states") or [] if isinstance(x, dict)]
+        for loc in loc_states:
+            dev = door_dev(loc.get("location_id"))
+            if not dev:
+                continue
+            emergency = loc.get("emergency") or {}
+            mode = next((v for v in (emergency.get("software"), emergency.get("hardware"))
+                         if v and v != "none"), "none")
+            values = {"emergency": mode}
+            if dev.states.get("emergency", "") != mode and mode != "none":
+                self.logger.warning(f"{dev.name}: Access emergency mode {mode}")
+            update(dev, values)
+            if "dps_connected" in loc and dev.states.get("positionSensorConnected") != bool(loc["dps_connected"]):
+                dev.updateStateOnServer("positionSensorConnected", bool(loc["dps_connected"]))
+
+        if event_type in ("access.data.device.update", "access.data.v2.device.update"):
+            dev = door_dev(data.get("location_id"))
+            device_type = data.get("device_type") or ""
+            if not dev or not device_type:
+                return
+            # A door can have a reader or camera on it too: the hub wins.
+            is_hub = "hub" in (data.get("category") or []) or "hub" in device_type.lower()
+            if not is_hub and dev.states.get("deviceType"):
+                return
+            update(dev, {"deviceType": device_type, "firmwareVersion": data.get("firmware")})
+            online = data.get("is_online", data.get("online"))
+            if is_hub and online is not None and dev.states.get("hubOnline") != bool(online):
+                dev.updateStateOnServer("hubOnline", bool(online))
 
     # ------------------------------------------------------------------
     # State updates - Cameras (Protect Integration API)
